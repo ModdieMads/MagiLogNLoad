@@ -53,7 +53,7 @@ Also, the system automatically cleans hashmaps in tandem with Lua's garbage coll
 </details>
 
 <details>
-  <summary><b>. Can I use MagiLogNLoad in a GUI-only map?
+  <summary><b>. Can I use MagiLogNLoad in a GUI-only map?</b></summary>
 Yes! The system is GUI-friendly and even uses GUI variables to guide its operations in order to minimize Custom Script actions.
 Check the provided map for how it's done.
 </details>
