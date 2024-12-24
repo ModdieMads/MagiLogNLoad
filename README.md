@@ -1,7 +1,7 @@
 # Magi Log 'N Load
 A logging-based save-load system that allows YOUR MAP to save-and-load at unbelievable speeds!
 ​
-Feature Overview:​
+### Feature Overview:​
 
 - Save units, items, destructables, terrain tiles, variables, hashtables and more with a single command!
 - Save and load tricky stuff, like transports with units inside, unit groups, cosmetic changes and per-player table and hashtable entries!
