@@ -1,7 +1,7 @@
 if Debug and Debug.beginFile then Debug.beginFile('MagiLogNLoad') end
 --[[
 
-Magi Log 'n Load 1.01
+Magi Log 'n Load v1.02
 
 A preload-based save-load system for WC3!
 
@@ -32,7 +32,7 @@ Further explanation of the system will be provided by Discord messages.
 Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 
 --------------------------------
- -- | Magi Log 'N Load 1.01 | --
+ -- | Magi Log 'N Load v1.02 |--
  -------------------------------
 
  --> By ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
@@ -211,6 +211,35 @@ do
 	local string_byte = string.byte;
 	local string_char = string.char;
 	local math_floor = math.floor;
+	
+		
+	local function TableToConsole(tab, indent) --
+		indent = indent or 0;
+		local toprint = '{\r\n';
+		indent = indent + 2 ;
+		for k, v in pairs(tab) do
+			toprint = toprint .. string.rep(' ', indent);
+
+			if (type(k) == 'number') then
+				toprint = toprint .. '[' .. k .. '] = ';
+			elseif (type(k) == 'string') then
+				toprint = toprint	.. k ..	' = ';
+			end
+
+			if (type(v) == 'number') then
+				toprint = toprint .. v .. ',\r\n';
+			elseif (type(v) == 'string') then
+				toprint = toprint .. '\'' .. v .. '\',\r\n';
+			elseif (type(v) == 'table') then
+				toprint = toprint .. TableToConsole(v, indent + 2) .. ',\r\n';
+			else
+				toprint = toprint .. '\'' .. tostring(v) .. '\',\r\n';
+			end
+		end
+
+		toprint = toprint .. string.rep(' ', indent-2) .. '}';
+		return toprint;
+	end
 
 	local function Nil()
 		return nil;
@@ -1180,7 +1209,8 @@ do
 		local u = GetPreplacedUnit(prepX, prepY, preplacedUId, preplacedPId);
 
 		if not u then
-			PrintDebug('|cffff5500ERROR:LoadPreplacedUnit!', 'Failed to find preplaced unit at (',prepX, prepY, '), id:', FourCC2Str(preplacedUId), '|r');
+			PrintDebug('|cffff5500ERROR:LoadPreplacedUnit!', 'Failed to find preplaced unit at (',prepX, prepY, '), id:', FourCC2Str(preplacedUId),
+					'.|r|cffff9900Creating a new unit...|r');
 			return LoadCreateUnit(p, preplacedUId, x, y, face);
 		end
 		if not u then return nil end;
@@ -2493,6 +2523,8 @@ do
 		return destr;
 	end
 	
+	--#AZZY2
+	
 	function MagiLogNLoad.LoadPlayerSaveFromString(p, argStr, startTime)
 		downloadingStreamFrom = nil;
 
@@ -2510,15 +2542,21 @@ do
 			print('|cffff5500Error!', 'Bad save-file! Aborting loading...|r');
 			return false;
 		end
-
+		
+		if MagiLogNLoad.oldTypeId2NewTypeId and next(MagiLogNLoad.oldTypeId2NewTypeId) then
+			PrintDebug('|cffff9900WARNING:MagiLogNLoad.LoadPlayerSaveFromString!', 'Replacing old type ids with new ones in MagiLogNLoad.oldTypeId2NewTypeId...|r');
+			
+			str = str:gsub(PERC..'-?'..PERC..'d+', MagiLogNLoad.oldTypeId2NewTypeId);
+		end
+		
 		local logs = Deserialize(str);
-
+		
 		if not logs then
 			print('|cffff5500Error!', 'Bad save-file! Cannot deserialize.|r');
 			return false;
 		end
 		
-		--#AZZY
+		--#AZZY1
 		
 
 		local manifest = logs[1];
@@ -2528,13 +2566,9 @@ do
 		end
 
 		if not manifest[1] or manifest[1] < MagiLogNLoad.version then
-			PrintDebug('|cffff5500ERROR:MagiLogNLoad.LoadPlayerSaveFromString!', 'Unexpected save-file version detected! Trying to load it anyway...|r');
-
-			if MagiLogNLoad.oldTypeId2NewTypeId and next(MagiLogNLoad.oldTypeId2NewTypeId) then
-				logs = Deserialize(str:gsub(PERC..'-?'..PERC..'d', MagiLogNLoad.oldTypeId2NewTypeId));
-				manifest = logs[1];
-			end
+			PrintDebug('|cffff9900WARNING:MagiLogNLoad.LoadPlayerSaveFromString!', 'Unexpected save-file version detected! Trying to load it anyway...|r');
 		end
+		
 
 		logs = logs[2];
 
@@ -2743,12 +2777,16 @@ do
 			local curVal = _G[name];
 			if curVal == nil and name:sub(1,4) ~= 'udg_' and _G['udg_'..name] ~= nil then
 				saveables.vars['udg_'..name] = saveables.vars[name];
+				saveables.vars[name] = nil;
 			end
 		end
 
 		for name,vals in pairs(saveables.vars) do
 			local curVal = _G[name];
-			if curVal ~= vals[1] then
+			if curVal and (type(curVal) == 'table' or GetHandleTypeStr(curVal) == 'group') then
+				saveables.vars[name] = nil;
+				MagiLogNLoad.WillSaveThis(name, true);
+			elseif curVal ~= vals[1] then
 				if log[name] then
 					ResetReferencedLogging(log[name]);
 				end
@@ -2762,6 +2800,7 @@ do
 				else
 					log[name] = nil;
 				end
+				
 				vals[1] = curVal;
 			end
 		end
@@ -2880,7 +2919,7 @@ do
 		end
 		TriggerAddAction(trig, (function()
 			if GetTriggerPlayer() == GetLocalPlayer() then
-				print('|cffffdd00:: MagiLogNLoad v1.01 by ModdieMads @ HiveWorkshop.com|r');
+				print('|cffffdd00:: MagiLogNLoad v1.02 by ModdieMads @ HiveWorkshop.com|r');
 				print('::>> Generously commissioned by the folks @ Azeroth Roleplay!');
 			end
 		end));
@@ -3142,7 +3181,8 @@ do
 		end
 
 		if obj == nil then
-			PrintDebug('|cffff9900WARNING:MagiLogNLoad.WillSaveThis!', 'No value found for variable named:', varName,'|r');
+			PrintDebug('|cffff9900WARNING:MagiLogNLoad.WillSaveThis!', 'Variable:', varName, 'is NOT initialized.',
+				'If that variable is supposed to hold a table, initialize it BEFORE making it saveable.|r');
 		else
 			if type(obj) == 'table' then
 				local mt = getmetatable(obj);
@@ -4142,10 +4182,12 @@ do
 				fileNameHash = {}
 			};
         end
+		
 		if MagiLogNLoad.oldTypeId2NewTypeId and next(MagiLogNLoad.oldTypeId2NewTypeId) then
+			
 			local temp = {};
 			for k,v in pairs(MagiLogNLoad.oldTypeId2NewTypeId) do
-				temp[type(k) == 'string' and FourCC(k) or k] = (type(v) == 'string' and FourCC(v) or v);
+				temp[tostring(type(k) == 'string' and FourCC(k) or k)] = tostring(type(v) == 'string' and FourCC(v) or v);
 			end
 			MagiLogNLoad.oldTypeId2NewTypeId = temp;
 		end
