@@ -1,7 +1,7 @@
 if Debug and Debug.beginFile then Debug.beginFile('MagiLogNLoad') end
 --[[
 
-Magi Log 'n Load v1.02
+Magi Log 'n Load v1.03
 
 A preload-based save-load system for WC3!
 
@@ -32,7 +32,7 @@ Further explanation of the system will be provided by Discord messages.
 Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 
 --------------------------------
- -- | Magi Log 'N Load v1.02 |--
+ -- | Magi Log 'N Load v1.03 |--
  -------------------------------
 
  --> By ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
@@ -212,7 +212,6 @@ do
 	local string_char = string.char;
 	local math_floor = math.floor;
 	
-		
 	local function TableToConsole(tab, indent) --
 		indent = indent or 0;
 		local toprint = '{\r\n';
@@ -784,20 +783,19 @@ do
 		return Map({...}, GetLoggingUnitSafe0);
 	end
 
-
 	local function Div10000(val)
 		return val*.0001;
 	end
 
 	local function XY2Index30(x, y)
 		return 	(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, x)*32767.), 0, 32767) << 15) |
-				(Clamp(math_floor(Terp(WORLD_BOUNDS.minY, WORLD_BOUNDS.maxY, y)*32767.), 0, 32767) << 15)
+				(Clamp(math_floor(Terp(WORLD_BOUNDS.minY, WORLD_BOUNDS.maxY, y)*32767.), 0, 32767));
 	end
 
 	local function XYZ2Index30(x, y, z)
-		return 	(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, x)*1203.), 0, 1023) << 20) |
-				(Clamp(math_floor(Terp(WORLD_BOUNDS.minY, WORLD_BOUNDS.maxY, y)*1203.), 0, 1023) << 10) |
-				(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, z)*1203.), 0, 1023));
+		return 	(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, x)*1023.), 0, 1023) << 20) |
+				(Clamp(math_floor(Terp(WORLD_BOUNDS.minY, WORLD_BOUNDS.maxY, y)*1023.), 0, 1023) << 10) |
+				(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, z)*1023.), 0, 1023));
 	end
 
 	local function XYZW2Index32(x, y, z, w)
@@ -911,7 +909,6 @@ do
 
 		BlzSetUnitFacingEx(transp, oriFacing);
 	end
-
 
 	local function ForceLoadUnits(transp, units)
 		if transp == nil or IsUnitGone(transp) then
@@ -1547,10 +1544,12 @@ do
 			magiLog.extrasOfPlayer[pid] = log;
 		end
 
-		log[fCodes.LoadSetPlayerState] = {1, fCodes.LoadSetPlayerState, {
-			{fCodes.GetLoggingPlayer},
-			GetPlayerState(p, PLAYER_STATE_RESOURCE_GOLD),
-			GetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER),
+		log[fCodes.LoadSetPlayerState] = {[fCodes.LoadSetPlayerState] = {
+			1, fCodes.LoadSetPlayerState, {
+				{fCodes.GetLoggingPlayer},
+				GetPlayerState(p, PLAYER_STATE_RESOURCE_GOLD),
+				GetPlayerState(p, PLAYER_STATE_RESOURCE_LUMBER),
+			}
 		}};
 	end
 
@@ -1615,7 +1614,9 @@ do
 			end
 
 			if curAnsN > 0 then
-				table.sort(curAns, SortLog);
+				if curAnsN > 1 then
+					table.sort(curAns, SortLog);
+				end
 
 				entriesN = entriesN + curAnsN;
 
@@ -1708,7 +1709,9 @@ do
 				end
 
 				if curAnsN > 0 then
-					table.sort(curAns, SortLog);
+					if curAnsN > 1 then
+						table.sort(curAns, SortLog);
+					end
 
 					entriesN = entriesN + curAnsN;
 
@@ -1769,8 +1772,9 @@ do
 			end
 
 			if curAnsN > 0 then
-				table.sort(curAns, SortLog);
-
+				if curAnsN > 1 then
+					table.sort(curAns, SortLog);
+				end
 				entriesN = entriesN + curAnsN;
 
 				curAnsN = curAnsN+1;
@@ -1793,7 +1797,7 @@ do
 		local ansN = 0;
 
 		for _,v in pairs(log) do
-			if fCodeFilter and fCodeFilter[v[2]] then
+			if not fCodeFilter or fCodeFilter[v[2]] then
 				ansN = ansN + 1;
 				ans[ansN] = v;
 
@@ -1804,7 +1808,7 @@ do
 			end
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -1820,7 +1824,7 @@ do
 		local ansN = 0;
 
 		for _,v in pairs(log) do
-			if fCodeFilter and fCodeFilter[v[2]] then
+			if not fCodeFilter or fCodeFilter[v[2]] then
 				ansN = ansN + 1;
 				ans[ansN] = v;
 
@@ -1831,7 +1835,7 @@ do
 			end
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -1846,18 +1850,20 @@ do
 		local ans = {}
 		local ansN = 0;
 
-		for _,v in pairs(log) do
-			if fCodeFilter and fCodeFilter[v[2]] then
-				ansN = ansN + 1;
-				ans[ansN] = v;
-				if ansN >= maxLen then
-					print('|cffff9900WARNING!', 'Your save-file has too many EXTRA entries! Not all will be saved!|r');
-					break;
+		for _,entryCol in pairs(log) do
+			for _,entry in pairs(entryCol) do
+				if not fCodeFilter or fCodeFilter[entry[2]] then
+					ansN = ansN + 1;
+					ans[ansN] = entry;
+					if ansN >= maxLen then
+						print('|cffff9900WARNING!', 'Your save-file has too many EXTRA entries! Not all will be saved!|r');
+						break;
+					end
 				end
 			end
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -1962,7 +1968,7 @@ do
 			if breakCheck then break end;
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -2033,7 +2039,7 @@ do
 			if breakCheck then break end;
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -2074,7 +2080,7 @@ do
 			end
 		end
 
-		if ansN > 0 then
+		if ansN > 1 then
 			table.sort(ans, SortLog);
 		end
 
@@ -2557,7 +2563,6 @@ do
 		end
 		
 		--#AZZY1
-		
 
 		local manifest = logs[1];
 		if not manifest then
@@ -2919,7 +2924,7 @@ do
 		end
 		TriggerAddAction(trig, (function()
 			if GetTriggerPlayer() == GetLocalPlayer() then
-				print('|cffffdd00:: MagiLogNLoad v1.02 by ModdieMads @ HiveWorkshop.com|r');
+				print('|cffffdd00:: MagiLogNLoad v1.03 by ModdieMads @ HiveWorkshop.com|r');
 				print('::>> Generously commissioned by the folks @ Azeroth Roleplay!');
 			end
 		end));
@@ -3217,6 +3222,9 @@ do
 	end
 
 	local function HashtableGet(whichHashTable, parentKey)
+		if GetHandleTypeStr(whichHashTable) == 'hashtable' then
+			PrintDebug('|cffff5500ERROR:HashtableGet', 'Non-proxied hashtable detected! ALL hashtables MUST be created/initialized after MagiLogNLoad.Init()!|r');
+		end
 		local index = whichHashTable[parentKey];
 		if not index then
 			local tab = {};
@@ -3583,6 +3591,9 @@ do
 		end
 
 		local flushChildren = function(whichHashTable, parentKey)
+			if GetHandleTypeStr(whichHashTable) == 'hashtable' then
+				PrintDebug('|cffff5500ERROR:Flush__HashtableBJ', 'Non-proxied hashtable detected! All Hashtables must be created/initialized after MagiLogNLoad.Init()!|r');
+			end
 			if whichHashTable and parentKey ~= nil then
 				local tab = whichHashTable[parentKey];
 				if tab then
