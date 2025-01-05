@@ -1,7 +1,7 @@
 if Debug and Debug.beginFile then Debug.beginFile('MagiLogNLoad') end
 --[[
 
-Magi Log 'n Load v1.03
+Magi Log 'n Load v1.04
 
 A preload-based save-load system for WC3!
 
@@ -32,7 +32,7 @@ Further explanation of the system will be provided by Discord messages.
 Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 
 --------------------------------
- -- | Magi Log 'N Load v1.03 |--
+ -- | Magi Log 'N Load v1.04 |--
  -------------------------------
 
  --> By ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
@@ -1293,10 +1293,10 @@ do
 			not IsUnitGone(u) and
 			not IsUnitType(u, UNIT_TYPE_SUMMONED);
 	end
-
+	
 	local function LogUnit(u, forceSaving, ownerId)
 		if not IsUnitSaveable(u, forceSaving) then
-			if not globalModes.savePreplacedUnits and preplacedWidgets.units[unit2TransportHash[u]] then
+			if not globalModes.savePreplacedUnits and preplacedWidgets.units[unit2TransportHash[u]] and IsUnitLoaded(u) then
 				tempPreplacedTranspWarningCheck = true;
 			end
 
@@ -1569,8 +1569,6 @@ do
 		local u2i = {};
 		local i2u = {};
 
-		local curUnit2TransportHash = {};
-
 		for u,v in pairs(log) do
 			if ansN >= maxLen then
 				print('|cffff9900WARNING!', 'Your save-file has too many UNIT entries! Not all will be saved!|r');
@@ -1639,13 +1637,12 @@ do
 
 		for u,_ in pairs(log) do
 			local transp = unit2TransportHash[u];
-			if transp then
-				if IsUnitLoaded(u) and not IsUnitGone(transp) and (globalModes.savePreplacedUnits or not preplacedWidgets.units[transp]) then
-					local hash = transport2UnitsHash[transp];
-					hash[#hash+1] = u;
-				else
-					unit2TransportHash[u] = nil;
-				end
+			
+			if IsUnitLoaded(u) and not IsUnitGone(transp) and (globalModes.savePreplacedUnits or not preplacedWidgets.units[transp]) then
+				local hash = transport2UnitsHash[transp];
+				hash[#hash+1] = u;
+			else
+				unit2TransportHash[u] = nil;
 			end
 		end
 
@@ -2924,7 +2921,7 @@ do
 		end
 		TriggerAddAction(trig, (function()
 			if GetTriggerPlayer() == GetLocalPlayer() then
-				print('|cffffdd00:: MagiLogNLoad v1.03 by ModdieMads @ HiveWorkshop.com|r');
+				print('|cffffdd00:: MagiLogNLoad v1.04 by ModdieMads @ HiveWorkshop.com|r');
 				print('::>> Generously commissioned by the folks @ Azeroth Roleplay!');
 			end
 		end));
