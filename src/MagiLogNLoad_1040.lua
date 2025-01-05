@@ -1289,9 +1289,13 @@ do
 
 	local function IsUnitSaveable(u, skipPreplacedCheck)
 		--#PROD
-		return (skipPreplacedCheck or (globalModes.savePreplacedUnits or (not preplacedWidgets.units[u] and not preplacedWidgets.units[unit2TransportHash[u]]))) and
+		return (
+			(skipPreplacedCheck or globalModes.savePreplacedUnits or
+				(not preplacedWidgets.units[u] and not (preplacedWidgets.units[unit2TransportHash[u]] and IsUnitLoaded(u)))
+			) and
 			not IsUnitGone(u) and
-			not IsUnitType(u, UNIT_TYPE_SUMMONED);
+			not IsUnitType(u, UNIT_TYPE_SUMMONED)
+		);
 	end
 	
 	local function LogUnit(u, forceSaving, ownerId)
