@@ -1,8 +1,9 @@
 if Debug and Debug.beginFile then Debug.beginFile('LibDeflate') end
 --[[
 
-Adaptation of LibDeflate by ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
-(C) ModdieMads
+Adaptation of LibDeflate v1.08
+
+(C) ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
 
 This software is provided 'as-is', without any express or implied
 warranty.  In no event will the authors be held liable for any damages
@@ -53,6 +54,7 @@ License History:
 do
 	LibDeflate = {}
 	-- localize Lua api for faster access.
+	-- this is highly unecessary, but here we go...
 	local assert = assert
 	local error = error
 	local pairs = pairs
@@ -60,14 +62,10 @@ do
 	local string_byte = string.byte
 	local string_char = string.char
 
-	local string_find = string.find
-	local string_gsub = string.gsub
 	local string_sub = string.sub
 	local table_concat = table.concat
 	local table_sort = table.sort
-	local tostring = tostring
-	local type = type
-	local math_floor = math.floor;
+	
 	local math_fmod = math.fmod;
 	local fmod = function(v,mod) return (math_fmod(v,mod) + .5)//1 end;
 
@@ -250,7 +248,6 @@ do
 		--
 		-- Here is the minimum code:
 
-
 		local strlen = #str
 
 		local i = 1
@@ -277,7 +274,7 @@ do
 	-- Compare adler32 checksum.
 	-- adler32 should be compared with a mod to avoid sign problem
 	-- 4072834167 (unsigned) is the same adler32 as -222133129
-	local function IsEqualAdler32(actual, expected)
+	function LibDeflate.IsEqualAdler32(actual, expected)
 		return fmod(actual, 4294967296) == fmod(expected, 4294967296)
 	end
 
@@ -1189,45 +1186,6 @@ do
 		return block_bitlen
 	end
 
-	-- Write fixed block.
-	-- @param lcodes literal,LZ77_length deflate codes
-	-- @param decodes LZ77 distance deflate codes
-	local function CompressFixedHuffmanBlock(WriteBits, is_last_block, lcodes, lextra_bits, dcodes, dextra_bits)
-		WriteBits(is_last_block and 1 or 0, 1) -- Last block identifier
-		WriteBits(1, 2) -- Fixed Huffman block identifier
-		local length_code_count = 0
-		local length_code_with_extra_count = 0
-		local dist_code_with_extra_count = 0
-		for i = 1, #lcodes do
-			local deflate_code = lcodes[i]
-			local huffman_code = _fix_block_literal_huffman_code[deflate_code]
-			local huffman_bitlen = _fix_block_literal_huffman_bitlen[deflate_code]
-			WriteBits(huffman_code, huffman_bitlen)
-			if deflate_code > 256 then -- Length code
-				length_code_count = length_code_count + 1
-				if deflate_code > 264 and deflate_code < 285 then
-					-- Length code with extra bits
-					length_code_with_extra_count = length_code_with_extra_count + 1
-					local extra_bits = lextra_bits[length_code_with_extra_count]
-					local extra_bits_bitlen =
-						_literal_deflate_code_to_extra_bitlen[deflate_code - 256]
-					WriteBits(extra_bits, extra_bits_bitlen)
-				end
-				-- Write distance code
-				local dist_code = dcodes[length_code_count]
-				local dist_huffman_code = _fix_block_dist_huffman_code[dist_code]
-				WriteBits(dist_huffman_code, 5)
-
-				if dist_code > 3 then -- dist code with extra bits
-					dist_code_with_extra_count = dist_code_with_extra_count + 1
-					local dist_extra_bits = dextra_bits[dist_code_with_extra_count]
-					local dist_extra_bits_bitlen = ((dist_code - (dist_code&1)) >> 1) - 1
-					WriteBits(dist_extra_bits, dist_extra_bits_bitlen)
-				end
-			end
-		end
-	end
-
 	-- Get the size of store block without writing any bits into the writer.
 	-- @param block_start The start index of the origin input string
 	-- @param block_end The end index of the origin input string
@@ -1243,28 +1201,6 @@ do
 		block_bitlen = block_bitlen + 16
 		block_bitlen = block_bitlen + (block_end - block_start + 1) * 8
 		return block_bitlen
-	end
-
-	-- Write the store block.
-	-- @param ... lots of stuffs
-	-- @return nil
-	local function CompressStoreBlock(WriteBits, WriteString, is_last_block, str, block_start, block_end, total_bitlen)
-		assert(block_end - block_start + 1 <= 65535)
-		WriteBits(is_last_block and 1 or 0, 1) -- Last block identifer.
-		WriteBits(0, 2) -- Store block identifier.
-		total_bitlen = total_bitlen + 3
-		local padding_bitlen = ((8 - (total_bitlen&7))&7)
-		if padding_bitlen > 0 then
-			WriteBits(_pow2[padding_bitlen] - 1, padding_bitlen)
-		end
-		local size = block_end - block_start + 1
-		WriteBits(size, 16)
-
-		-- Write size's one's complement
-		local comp = (255 - (size&255)) + (255 - ((size - (size&255)) >> 8)) * 256
-		WriteBits(comp, 16)
-
-		WriteString(str:sub(block_start, block_end))
 	end
 
 	-- Do the deflate
