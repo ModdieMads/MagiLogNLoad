@@ -1,7 +1,7 @@
 if Debug and Debug.beginFile then Debug.beginFile('MagiLogNLoad') end
 --[[
 
-Magi Log 'n Load v1.04
+Magi Log 'n Load v1.08
 
 A preload-based save-load system for WC3!
 
@@ -32,7 +32,7 @@ Further explanation of the system will be provided by Discord messages.
 Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 
 --------------------------------
- -- | Magi Log 'N Load v1.04 |--
+ -- | Magi Log 'N Load v1.08 |--
  -------------------------------
 
  --> By ModdieMads @ https://www.hiveworkshop.com/members/moddiemads.310879/
@@ -58,7 +58,7 @@ Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 | Installation:                                                                                                                                                             |
 |                                                                                                                                                                           |
-|   1. Open the provided map (MagiLogNLoad1010.w3x) and copy-paste the Trigger Editor's MagiLogNLoad folder into your map.                                                  |
+|   1. Open the provided map, and copy-paste the Trigger Editor's MagiLogNLoad folder into your map.                                                  |
 |   2. Order the script files from top to bottom: MLNL Config, MLNL FileIO, MLNL LibDeflate, MagiLogNload                                                                   |
 |   3. Adjust the settings in the MLNL Config script to fit your needs.                                                                                                     |
 |   4. Call MagiLogNLoad.Init() JUST AFTER the map has been initialized.                                                                                                    |
@@ -199,11 +199,27 @@ Hit me up on HiveWorkshop's Discord server! @ModdieMads!
 *    MagiLogNLoad.HashtableLoadFrom(childKey, parentKey, whichHashTable, default)
 *        - Loads a value from a GUI hashtable. Necessary due to the usage of Bribe and Tasyen's Hashtable to Lua table converter.
 *        - Args -> self explanatory
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+* CHANGELOG:
+* v1.08
+*	- Added parallel bursting sync streams. Load times can be up to 50x faster.
+*	- Added filename validation to prevent users from shooting themselves in the foot.
+*	- Added internal state monitoring capabilities to the system. Errors should be much easier to track.
+*	- Added the option for the map-maker to set a time limit for loading and syncing. The loading will fail in case it's exceeded.
+*	- Added progress prints for file loading. They should show up at 25, 50 and 75% loading progress.
+*	- Changed the default behavior for MagiLogNLoad.WillSaveThis. Ommitting the second argument will default to <true>.
+*	- Fixed a possible jamming desync when multiple players are syncing at the same time.
+*	- Fixed a bug involving some weird Blizzard functions, like SetUnitColor.
+*	- Fixed a bug involving unit groups that could cause saves to fail.
+*	- Fixed a bug involving proxied tables that could cause saves to fail.
+*	- Fixed a bug causing real variables to sometimes save as 10x their normal value.
+*	- Fixed a bug causing research/upgrade entries to sometimes not load correctly.
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------]]
 
 do
-	MagiLogNLoad = MagiLogNLoad or {version = 1010};
+	MagiLogNLoad = MagiLogNLoad or {};
+	MagiLogNLoad.engineVersion = 1080;
 
 	local unpack = table.unpack;
 	local concat = table.concat;
@@ -316,6 +332,43 @@ do
 		end
 		return -1;
 	end
+	
+	
+	local function PluckArray(arr, propName)
+		local ans = {};
+
+		for i,v in ipairs(arr) do
+			ans[i] = v[propName];
+		end
+
+		return ans;
+	end
+	
+	local function Array2Hash(arr, fromInd, toInd, nilVal)
+		fromInd = fromInd or 1;
+		toInd = toInd or #arr;
+
+		local ans = {};
+
+
+		for i=fromInd,toInd do
+			if arr[i] ~= nil and arr[i] ~= nilVal then
+				ans[arr[i] ] = i;
+			end
+		end
+
+		return ans;
+	end
+	
+	local function TableInvert(tab)
+		local ans = {};
+
+		for k,v in pairs(tab) do
+			ans[v] = k;
+		end
+		
+		return ans;
+	end
 
 	local int2Function = {};
 
@@ -331,6 +384,7 @@ do
 		[bj_PLAYER_NEUTRAL_VICTIM] = true,
 		[bj_PLAYER_NEUTRAL_EXTRA] = true
 	};
+	
 
 	local ENUM_RECT = {};
 	local enumSingleX = 1.0;
@@ -347,16 +401,54 @@ do
 	local fileNameSanitizer = '';
 
 	local TICK_DUR = .035;
-	local globalTimer = {};
-	local globalTick = 1;
+	local mainTimer = {};
+	local mainTick = 1;
 	local onLaterTickFuncs = {};
-
+	
 	local WORLD_BOUNDS = {};
 
 	MagiLogNLoad.ALL_CARGO_ABILS = MagiLogNLoad.ALL_CARGO_ABILS or {
 		FourCC('Aloa'), FourCC('Slo3'),FourCC('Sch3'), FourCC('Sch5'), FourCC('S008'), FourCC('S006'),FourCC('S005'), FourCC('S000'),
 		FourCC('S001'), FourCC('A0EZ'),FourCC('A06W')
 	};
+	
+	MagiLogNLoad.BASE_STATES = {
+		OFF = 0,
+		STANDBY = 1,
+		CLEANING_TABLES = 2
+	};
+	
+	MagiLogNLoad.SAVE_STATES = {
+		SAVE_COMMAND_ENTERED = 100,
+		UPDATE_SAVEABLE_VARS = 110,
+		LOCAL_SAVE_PLAYER = 120,
+		CREATE_UNITS_OF_PLAYER_LOG = 130,
+		CREATE_ITEMS_OF_PLAYER_LOG = 140,
+		CREATE_EXTRAS_OF_PLAYER_LOG = 150,
+		CREATE_SERIAL_LOGS = 160,
+		COMPRESSING_LOGS = 170,
+		FILE_IO_SAVE_FILE = 180,
+		PRINT_TALLY = 190
+	};
+	
+	MagiLogNLoad.LOAD_STATES = {
+		LOAD_COMMAND_ENTERED = 500,
+		QUEUE_LOAD = 510,
+		SYNC_LOCAL_SAVE_FILE = 520,
+		SETTING_START_OSCLOCK = 530,
+		FILE_IO_LOAD_FILE = 540,
+		GET_LOG_STR = 550,
+		CREATE_UPLOADING_STREAM = 560,
+		CREATE_MESSAGES = 570,
+		SEND_SYNC_DATA = 580,
+		SYNC_EVENT = 590,
+		GETTING_MANIFESTS = 600,
+		LOADING_LOGS = 605,
+		SUCCESFUL_LOADING = 610,
+		PRINT_TALLY = 620
+	};
+	
+	MagiLogNLoad.stateOfPlayer = {};
 
 	local word2CodeHash = {};
 	local code2WordHash = {};
@@ -388,53 +480,10 @@ do
 		return str:sub(1, (str:find(':', nil, true) or 0) - 1);
 	end
 
-	local function PluckArray(arr, propName)
-		local ans = {};
-
-		for i,v in ipairs(arr) do
-			ans[i] = v[propName];
-		end
-
-		return ans;
-	end
-
-	local function PluckArrayIntoHash(arr, propName, valName)
-		local ans = {};
-		if valName == nil then
-			for i,v in ipairs(arr) do
-				ans[v[propName] ] = v;
-			end
-		else
-			for i,v in ipairs(arr) do
-				ans[v[propName] ] = v[valName];
-			end
-		end
-		return ans;
-	end
-
-
-	local function Array2Hash(arr, fromInd, toInd, nilVal)
-		fromInd = fromInd or 1;
-		toInd = toInd or #arr;
-
-		local ans = {};
-
-
-		for i=fromInd,toInd do
-			if arr[i] ~= nil and arr[i] ~= nilVal then
-				ans[arr[i] ] = i;
-			end
-		end
-
-		return ans;
-	end
-
-	local function TrySuffix(str, suff)
-		return fileName:sub(-(#suff),-1) ~= suff  and str..suff or str;
-	end
-
-	local function TryPrefix(str, pref)
-		return fileName:sub(1,#pref) ~= pref and pref..str or str;
+	local StringTrim_CONST0 = '^'..PERC..'s*(.-)'..PERC..'s*$';
+	local StringTrim_CONST1 = PERC..'1';
+	local function StringTrim(s)
+		return s:gsub(StringTrim_CONST0, StringTrim_CONST1);
 	end
 
 	local function GetUTF8Codes(str)
@@ -469,9 +518,7 @@ do
 
 		local strlen = #str;
 		local arr = {string_byte(str, 1, strlen)};
-		local len = #arr;
-
-
+		
 		local ans = {};
 		for i=0,(strlen >> 1)+(strlen&1)-1 do
 			ans[i+1] = utf8_char((arr[i+i+1] << 8) + (arr[i+i+2] or 255));
@@ -498,8 +545,7 @@ do
 			local substr = str:sub(ind0, ind0 + ind1);
 
 			ind0 = ind0 + ind1;
-
-
+			
 			local lastHit = 0;
 
 			local hitInd = substr:find(STR0, lastHit + 1, true);
@@ -550,8 +596,7 @@ do
 			local substr = str:sub(ind, ind + substrLen);
 
 			ind = ind + substrLen;
-
-
+			
 			local lastHit = 1;
 
 			local hitInd = string_byte(substr, lastHit, lastHit);
@@ -574,8 +619,6 @@ do
 				ansN = ansN + 1;
 				ans[ansN] = substr:sub(lastHit+1, substrLen);
 			end
-
-
 		end
 
 		return concat(ans);
@@ -601,10 +644,6 @@ do
 		end
 	end
 
-	local function ResetFunction(funcName)
-		_G[funcName] = oriG[funcName];
-		oriG[funcName] = nil;
-	end
 
 	local serializeIntTableFuncs = {};
 	local function SerializeIntTable(x, stk)
@@ -631,8 +670,8 @@ do
 	local function Deserialize(str)
 		return load('return ' ..  str)();
 	end
-
-	local deconvertPlayerColorHash = {
+	
+	local deconvertHash = {
 		[PLAYER_COLOR_RED] = 0,
 		[PLAYER_COLOR_BLUE] = 1,
 		[PLAYER_COLOR_CYAN] = 2,
@@ -656,26 +695,20 @@ do
 		[PLAYER_COLOR_COAL] = 20,
 		[PLAYER_COLOR_SNOW] = 21,
 		[PLAYER_COLOR_EMERALD] = 22,
-		[PLAYER_COLOR_PEANUT] = 23
-	};
-
-	local deconvertUnitStateHash = {
+		[PLAYER_COLOR_PEANUT] = 23,
+		
 		[UNIT_STATE_LIFE] = 0,
 		[UNIT_STATE_MAX_LIFE] = 1,
 		[UNIT_STATE_MANA] = 2,
-		[UNIT_STATE_MAX_MANA] = 3
-	};
-
-	local deconvertRarityControlHash = {
+		[UNIT_STATE_MAX_MANA] = 3,
+		
 		[RARITY_FREQUENT] = 0,
-		[RARITY_RARE] = 1
-	};
-
-	local deconvertPlayerStateHash = {
+		[RARITY_RARE] = 1,
+		
 		[PLAYER_STATE_RESOURCE_GOLD] = 1,
 		[PLAYER_STATE_RESOURCE_LUMBER] = 2
 	};
-
+	
 	local logGen = {
 		terrain = 0,
 		destrs = 0,
@@ -714,7 +747,7 @@ do
 
 	local tabKeyCleaner, tabKeyCleanerSize, lastCleanedTab;
 
-	local globalModes = {
+	MagiLogNLoad.modes = {
 		debug = true,
 
 		savePreplacedUnits = false,
@@ -729,29 +762,36 @@ do
 
 		saveDestrsKilledByUnits = false
 	};
-	local guiModes = {};
-	local guiModesSlots = 15;
-
-	local modalTriggers = {};
-
-
+	
 	local function PrintDebug(...)
-		if globalModes.debug then
+		if MagiLogNLoad.modes.debug then
 			print(...);
 		end
 	end
+	
+	local guiModes = {};
 
-	local tempPreplacedTranspWarningCheck = false;
+	local modalTriggers = {};
+	local issuedWarningChecks = {
+		saveInPreplacedTransp = false,
+		tabKeyCleanerPanic = false,
+		initPanic = false,
+		
+		loadTimeWarning = false,
+		synced25 = false,
+		synced50 = false,
+		synced75 = false,
+	};	
 	local signals = {
 		abortLoop = nil
 	};
-
+	
 	local preplacedWidgets = {};
 
 	local unit2TransportHash = {};
 	local tempIsGateHash = setmetatable({}, { __mode = 'k' });
 
-	local magiStreams = {};
+	local streamsOfPlayer = {};
 	local uploadingStream = nil;
 	local downloadingStreamFrom;
 	local loadingQueue = {};
@@ -784,7 +824,7 @@ do
 	end
 
 	local function Div10000(val)
-		return val*.0001;
+		return val/10000.;
 	end
 
 	local function XY2Index30(x, y)
@@ -804,8 +844,7 @@ do
 				(Clamp(math_floor(Terp(WORLD_BOUNDS.minX, WORLD_BOUNDS.maxX, z)*255.), 0, 255) << 8) |
 				(Clamp(math_floor(Terp(WORLD_BOUNDS.minY, WORLD_BOUNDS.maxY, w)*255.), 0, 255));
 	end
-
-
+	
 	local function TableTrim(tab, maxLen)
 		local len = #tab;
 		if len < maxLen then return tab end;
@@ -881,7 +920,7 @@ do
 	end
 
 	local function SortLog(a, b)
-		return a[1] < b[1] or (a[4] and b[4] and a[1] == b[1] and a[4] < b[4]); -- because of LoadGroupAddUnit entries
+		return a[1] < b[1] or (a[1] == b[1] and a[4] and b[4] and a[4] < b[4]); -- because of LoadGroupAddUnit entries
 	end
 
 	local function IsUnitGone(u)
@@ -949,7 +988,7 @@ do
 			end
 		end
 
-		onLaterTickFuncs[#onLaterTickFuncs+1] = {globalTick + 30, ResetTransportAfterLoad, {transp,  oriCastRanges, units, oriMoveSpeeds, oriFacing}};
+		onLaterTickFuncs[#onLaterTickFuncs+1] = {mainTick + 30, ResetTransportAfterLoad, {transp,  oriCastRanges, units, oriMoveSpeeds, oriFacing}};
 	end
 
 	local function UpdateHeroStats(hero, str, agi, int)
@@ -1068,6 +1107,7 @@ do
 		end
 
 		local u = GetPreplacedUnit(x,y,unitid,unitOwnerId);
+		
 		if not u then return nil end;
 
 		local item = UnitItemInSlot(u, slot);
@@ -1092,7 +1132,7 @@ do
 	end
 
 	local function GetDestructableByXY(x,y)
-
+		
 		MoveRectTo(ENUM_RECT, x, y);
 
 		enumSingleMinDist = 1e20;
@@ -1105,21 +1145,13 @@ do
 		return enumSingle;
 	end
 
-	local function UnpackLogArg(tab)
-		if #tab == 1 then
-			return int2Function[tab[1]]();
-		end
-
-		return int2Function[tab[1]](unpack(tab[2]));
-	end
-
 	local function UnpackLogEntry(tab)
 		local ans = {};
 		local ansN = 0;
 		for i,v in ipairs(tab) do
 			if type(v) == 'table' then
 				ansN = ansN + 1;
-				ans[ansN] = UnpackLogArg(v);
+				ans[ansN] = #v == 1 and int2Function[v[1]]() or int2Function[v[1]](unpack(v[2]));
 			else
 				ansN = ansN + 1;
 				ans[ansN] = v;
@@ -1147,8 +1179,10 @@ do
 				signals.abortLoop = nil;
 				break;
 			end
+			
 			entriesN = entriesN + 1;
 		end
+		
 		return entriesN;
 	end
 	
@@ -1253,6 +1287,7 @@ do
 	end
 
 	local function LoadUnitAddPreplacedItem(u, item, itemid, slotid, charges)
+		
 		if not item then
 			return LoadUnitAddItemToSlotById(u, itemid, slotid, charges);
 		end
@@ -1290,7 +1325,7 @@ do
 	local function IsUnitSaveable(u, skipPreplacedCheck)
 		--#PROD
 		return (
-			(skipPreplacedCheck or globalModes.savePreplacedUnits or
+			(skipPreplacedCheck or MagiLogNLoad.modes.savePreplacedUnits or
 				(not preplacedWidgets.units[u] and not (preplacedWidgets.units[unit2TransportHash[u]] and IsUnitLoaded(u)))
 			) and
 			not IsUnitGone(u) and
@@ -1300,8 +1335,8 @@ do
 	
 	local function LogUnit(u, forceSaving, ownerId)
 		if not IsUnitSaveable(u, forceSaving) then
-			if not globalModes.savePreplacedUnits and preplacedWidgets.units[unit2TransportHash[u]] and IsUnitLoaded(u) then
-				tempPreplacedTranspWarningCheck = true;
+			if not MagiLogNLoad.modes.savePreplacedUnits and preplacedWidgets.units[unit2TransportHash[u]] and IsUnitLoaded(u) then
+				issuedWarningChecks.saveInPreplacedTransp = true;
 			end
 
 			return false;
@@ -1356,7 +1391,7 @@ do
 			for i=0,5 do
 				local item = UnitItemInSlot(u, i);
 				if item then
-					if globalModes.savePreplacedItems and preplacedWidgets.items[item] then
+					if MagiLogNLoad.modes.savePreplacedItems and preplacedWidgets.items[item] then
 						tab = preplacedWidgets.items[item];
 
 						logEntries[(fCodes.LoadUnitAddPreplacedItem << 8) | i] = {30+2*i, fCodes.LoadUnitAddPreplacedItem, {
@@ -1379,7 +1414,10 @@ do
 		end
 
 		if IsHeroUnitId(uid) then
-			logEntries[fCodes.BlzSetHeroProperName] = {61, fCodes.BlzSetHeroProperName, {{fCodes.GetLoggingUnit}, {fCodes.utf8char, GetUTF8Codes(GetHeroProperName(u))}}};
+			local str = GetHeroProperName(u);
+			if str and str ~= '' then
+				logEntries[fCodes.BlzSetHeroProperName] = {61, fCodes.BlzSetHeroProperName, {{fCodes.GetLoggingUnit}, {fCodes.utf8char, GetUTF8Codes(str)}}};
+			end
 
 			logEntries[fCodes.SetHeroXP] = {62, fCodes.SetHeroXP, {{fCodes.GetLoggingUnit}, GetHeroXP(u), {fCodes.I2B, {B2I(false)}}}};
 
@@ -1430,14 +1468,14 @@ do
 		local createdLog = {};
 		magiLog.unitsOfPlayer[tempPlayerId] = createdLog;
 
-		tempPreplacedTranspWarningCheck = false;
+		issuedWarningChecks.saveInPreplacedTransp = false;
 
-		if globalModes.saveAllUnitsOfPlayer then
+		if MagiLogNLoad.modes.saveAllUnitsOfPlayer then
 			GroupEnumUnitsOfPlayer(tempGroup, p, FilterEnumLogUnit);
 			GroupClear(tempGroup);
 		end
 
-		if globalModes.saveUnitsDisownedByPlayers then
+		if MagiLogNLoad.modes.saveUnitsDisownedByPlayers then
 			for k,v in pairs(magiLog.formerUnits) do
 				if v == tempPlayerId and IsUnitSaveable(k) and neutralPIds[GetPlayerId(GetOwningPlayer(k))] then
 					LogUnit(k);
@@ -1455,18 +1493,18 @@ do
 			end
 		end
 		
-		if tempPreplacedTranspWarningCheck then
+		if issuedWarningChecks.saveInPreplacedTransp then
 			--#AZZY
 			--print('|cffff9900Warning! Some units are loaded into the Roleplaying Circle and cannot be saved!|r');
 			print('|cffff9900Warning! Some units are loaded into an unsaved transport and will not be saved!|r');
 		end
-		tempPreplacedTranspWarningCheck = false;
+		issuedWarningChecks.saveInPreplacedTransp = false;
 	end
 
 	local function LoadPreplacedItem(x, y, charges, pid, prepItemId, prepSlot, prepX, prepY, prepUnitId, prepUnitOwnerId)
 		local item = GetPreplacedItem(prepItemId, prepSlot, prepX, prepY, prepUnitId, prepUnitOwnerId);
 
-		if item == nil then
+		if not item then
 			PrintDebug('|cffff5500ERROR:LoadPreplacedItem!', 'Failed to find preplaced item at with id:', FourCC2Str(prepItemId), '!|r');
 			return LoadCreateItem(prepItemId, x, y, charges, pid);
 		end
@@ -1484,7 +1522,7 @@ do
 		if not item or GetItemTypeId(item) == 0 or GetWidgetLife(item) <= 0. then return false end;
 		local itemEntry = magiLog.items[item];
 
-		if (forceSaving or globalModes.savePreplacedItems or globalModes.saveAllItemsOnGround) and preplacedWidgets.items[item] then
+		if (forceSaving or MagiLogNLoad.modes.savePreplacedItems or MagiLogNLoad.modes.saveAllItemsOnGround) and preplacedWidgets.items[item] then
 
 			local tab = preplacedWidgets.items[item];
 
@@ -1495,7 +1533,7 @@ do
 			}}};
 
 			return true;
-		elseif globalModes.saveAllItemsOnGround or (globalModes.saveItemsDroppedManually and itemEntry and itemEntry[1] == pid) then
+		elseif MagiLogNLoad.modes.saveAllItemsOnGround or (MagiLogNLoad.modes.saveItemsDroppedManually and itemEntry and itemEntry[1] == pid) then
 
 			logGen.items = logGen.items + 1;
 			magiLog.itemsOfPlayer[pid][item] = { [fCodes.LoadCreateItem] = {logGen.items, fCodes.LoadCreateItem, {
@@ -1527,7 +1565,7 @@ do
 			end
 		end
 
-		if globalModes.savePreplacedItems then
+		if MagiLogNLoad.modes.savePreplacedItems then
 			for item,v in pairs(magiLog.items) do
 				if not createdLog[item] and v[1] == pid and v[2] and preplacedWidgets.items[item] then
 					logGen.items = logGen.items + 1;
@@ -1561,6 +1599,8 @@ do
 	local function CompileUnitsLog(log, fCodeFilter)
 		if not log then return {{}, 'unit', {0,0}} end;
 
+		local table_sort = table.sort;
+
 		local maxLen = MagiLogNLoad.MAX_UNITS_PER_FILE;
 		local maxEntries = MagiLogNLoad.MAX_ENTRIES_PER_UNIT;
 		local entriesN = 0;
@@ -1593,7 +1633,7 @@ do
 					local check = true;
 					if v2[1] == nil or type(v2[1]) == 'table' then
 						for _,v3 in pairs(v2) do
-							if type(v3) ~= 'table' then break end;
+							if type(v3) ~= 'table' or next(v3) == nil then break end;
 							check = false;
 
 							if not fCodeFilter or fCodeFilter[v3[2]] then
@@ -1603,7 +1643,7 @@ do
 						end
 					end
 
-					if check and (not fCodeFilter or fCodeFilter[v2[2]]) then
+					if check and type(v2) == 'table' and next(v2) ~= nil and (not fCodeFilter or fCodeFilter[v2[2]]) then
 						curAnsN = curAnsN + 1;
 						curAns[curAnsN] = v2;
 					end
@@ -1617,9 +1657,9 @@ do
 
 			if curAnsN > 0 then
 				if curAnsN > 1 then
-					table.sort(curAns, SortLog);
+					table_sort(curAns, SortLog);
 				end
-
+				
 				entriesN = entriesN + curAnsN;
 
 				ansN = ansN + 1;
@@ -1642,7 +1682,7 @@ do
 		for u,_ in pairs(log) do
 			local transp = unit2TransportHash[u];
 			
-			if IsUnitLoaded(u) and not IsUnitGone(transp) and (globalModes.savePreplacedUnits or not preplacedWidgets.units[transp]) then
+			if IsUnitLoaded(u) and not IsUnitGone(transp) and (MagiLogNLoad.modes.savePreplacedUnits or not preplacedWidgets.units[transp]) then
 				local hash = transport2UnitsHash[transp];
 				hash[#hash+1] = u;
 			else
@@ -1653,7 +1693,7 @@ do
 		local lastInd = #ans;
 		for transp, units in pairs(transport2UnitsHash) do
 			local ind = u2i[transp];
-			if ind then
+			if ind and #units > 0 then
 				ans[ind], ans[lastInd], u2i[transp], u2i[i2u[lastInd]], i2u[ind], i2u[lastInd] = ans[lastInd], ans[ind], lastInd, ind, i2u[lastInd], i2u[ind];
 
 				lastInd = lastInd - 1;
@@ -1662,8 +1702,9 @@ do
 				local curLog = ans[ind];
 
 				curLog[#curLog+1] = {200, fCodes.ForceLoadUnits, {
-					{fCodes.GetLoggingUnit, {ind}}, {fCodes.GetLoggingUnitsSafe0, Map(units, function(v) return u2i[v] end)}
+					{fCodes.GetLoggingUnit, {ind}}, {fCodes.GetLoggingUnitsSafe0, Map(units, function(v) return u2i[v] or -1 end)}
 				}};
+				entriesN = entriesN + 1;
 			end
 		end
 
@@ -1679,7 +1720,8 @@ do
 
 	local function CompileDestrsLog(log, fCodeFilter)
 		if not log then return {{}, 'destructable', {0,0}} end;
-
+		local table_sort = table.sort;
+		
 		local maxLen = MagiLogNLoad.MAX_DESTRS_PER_FILE;
 		local maxEntries = MagiLogNLoad.MAX_ENTRIES_PER_DESTR;
 		local entriesN = 0;
@@ -1688,7 +1730,7 @@ do
 		local ansN = 0;
 
 		for destr, v in pairs(log) do
-			if v[fCodes.LoadCreateDestructable] or globalModes.savePreplacedDestrs then
+			if v[fCodes.LoadCreateDestructable] or MagiLogNLoad.modes.savePreplacedDestrs then
 				local curAns = {};
 				local curAnsN = 0;
 
@@ -1698,7 +1740,7 @@ do
 				end
 
 				for _,v2 in pairs(v) do
-					if not fCodeFilter or fCodeFilter[v2[2]] then
+					if type(v2) == 'table' and next(v2) ~= nil and (not fCodeFilter or fCodeFilter[v2[2]]) then
 						curAnsN = curAnsN + 1;
 						curAns[curAnsN] = v2;
 
@@ -1711,7 +1753,7 @@ do
 
 				if curAnsN > 0 then
 					if curAnsN > 1 then
-						table.sort(curAns, SortLog);
+						table_sort(curAns, SortLog);
 					end
 
 					entriesN = entriesN + curAnsN;
@@ -1731,7 +1773,9 @@ do
 
 	local function CompileItemsLog(log, fCodeFilter)
 		if not log then return {{}, 'item', {0,0}} end;
-
+		
+		local table_sort = table.sort;
+		
 		local maxLen = MagiLogNLoad.MAX_ITEMS_PER_FILE;
 		local maxEntries = MagiLogNLoad.MAX_ENTRIES_PER_ITEM;
 		local entriesN = 0;
@@ -1747,21 +1791,9 @@ do
 				print('|cffff9900WARNING!', 'Your save-file has too many ITEM entries! Not all will be saved!|r');
 				break;
 			end
-
-			if fCodeFilter then
-				for _,v2 in pairs(v) do
-					if fCodeFilter[v2[2]] then
-						curAnsN = curAnsN + 1;
-						curAns[curAnsN] = v2;
-
-						if curAnsN >= maxEntries then
-							print('|cffff9900WARNING!', 'Some ITEMS have too much data! Not all of it will be saved!|r');
-							break;
-						end
-					end
-				end
-			else
-				for _,v2 in pairs(v) do
+			
+			for _,v2 in pairs(v) do
+				if type(v2) == 'table' and next(v2) ~= nil and (not fCodeFilter or fCodeFilter[v2[2]]) then
 					curAnsN = curAnsN + 1;
 					curAns[curAnsN] = v2;
 
@@ -1771,10 +1803,11 @@ do
 					end
 				end
 			end
+			
 
 			if curAnsN > 0 then
 				if curAnsN > 1 then
-					table.sort(curAns, SortLog);
+					table_sort(curAns, SortLog);
 				end
 				entriesN = entriesN + curAnsN;
 
@@ -1798,7 +1831,7 @@ do
 		local ansN = 0;
 
 		for _,v in pairs(log) do
-			if not fCodeFilter or fCodeFilter[v[2]] then
+			if type(v) == 'table' and next(v) ~= nil and (not fCodeFilter or fCodeFilter[v[2]]) then
 				ansN = ansN + 1;
 				ans[ansN] = v;
 
@@ -1825,7 +1858,7 @@ do
 		local ansN = 0;
 
 		for _,v in pairs(log) do
-			if not fCodeFilter or fCodeFilter[v[2]] then
+			if type(v) == 'table' and next(v) ~= nil and (not fCodeFilter or fCodeFilter[v[2]]) then
 				ansN = ansN + 1;
 				ans[ansN] = v;
 
@@ -1853,9 +1886,10 @@ do
 
 		for _,entryCol in pairs(log) do
 			for _,entry in pairs(entryCol) do
-				if not fCodeFilter or fCodeFilter[entry[2]] then
+				if type(entry) == 'table' and next(entry) ~= nil and (not fCodeFilter or fCodeFilter[entry[2]]) then
 					ansN = ansN + 1;
 					ans[ansN] = entry;
+					
 					if ansN >= maxLen then
 						print('|cffff9900WARNING!', 'Your save-file has too many EXTRA entries! Not all will be saved!|r');
 						break;
@@ -1889,11 +1923,9 @@ do
 		if val == nil then return nil end;
 
 		local valType = type(val);
-
+		
 		if valType == 'number' then
-			return (val == math_floor(val) and val) or
-				((val > 2147483647*.0001 or val < -2147483647*.0001) and Round(val)) or
-				{fCodes.Div10000, {Round(10000*val)}};
+			return (val == math_floor(val) or val > 2147483647/10000 or val < -2147483647/10000) and Round(val) or {fCodes.Div10000, {Round(10000*val)}};
 		end
 
 		if valType == 'boolean' then return {fCodes.I2B, {B2I(val)}} end;
@@ -1909,7 +1941,7 @@ do
 			end
 		end
 
-		PrintDebug('|cffff5500ERROR:Handle2LogGetter!', 'Cannot create getter for value of type',valType,'!|r');
+		PrintDebug('|cffff9900WARNING:Handle2LogGetter!', 'Cannot create getter for value of type',valType,'!|r');
 		return nil;
 	end
 
@@ -1958,7 +1990,7 @@ do
 
 						elseif warningCheck then
 							warningCheck = false;
-							PrintDebug('|cffff5500ERROR:CompileProxyTablesLog!', 'Some key getters are nil and will be skipped!|r');
+							PrintDebug('|cffff9900WARNING:CompileProxyTablesLog!', 'Some key getters are nil and will be skipped!|r');
 						end
 					end
 				end
@@ -2161,7 +2193,7 @@ do
 		fullLog[n] = log;
 		Vec2Add_inPlace(tally[log[2]], log[3]);
 
-		local manifest = {MagiLogNLoad.version, Map(PluckArray(fullLog, 2), function(v) return word2CodeHash[v] or 0 end)};
+		local manifest = {MagiLogNLoad.engineVersion, Map(PluckArray(fullLog, 2), function(v) return word2CodeHash[v] or 0 end)};
 
 		fullLog = PluckArray(fullLog, 1);
 
@@ -2176,12 +2208,121 @@ do
 
 		return str, tally;
 	end
-
 	
-
+	function MagiLogNLoad.TryLoadNextInQueue()
+		if downloadingStreamFrom == nil and #loadingQueue > 0 then
+			local queued = loadingQueue[1];
+			if queued then
+				remove(loadingQueue, 1);
+				if queued[1] == GetLocalPlayer() then
+					MagiLogNLoad.SyncLocalSaveFile(queued[2]);
+				end
+				return true;
+			end
+		end
+		return false;
+	end
+	
+	
+	local function AbortCurrentLoading()
+		if downloadingStreamFrom then
+			local stream = streamsOfPlayer[GetPlayerId(downloadingStreamFrom)];
+			stream = stream and stream[logGen.streams] or nil;
+			if stream then 
+				stream.aborted = true;
+			end
+		end
+		downloadingStreamFrom = nil;
+		uploadingStream = nil;
+	end
+	
+	local function CheckLoadingProg()
+		if not downloadingStreamFrom then return end;
+		
+		local stream = streamsOfPlayer[GetPlayerId(downloadingStreamFrom)];
+		stream = stream and stream[logGen.streams] or nil;
+		
+		if not stream or stream.aborted or not stream.streamStartTick then return end;
+		
+		local streamStartTick = stream.streamStartTick;
+		
+		local loadingTime = (mainTick - streamStartTick)*TICK_DUR;
+		if not issuedWarningChecks.loadTimeWarning and 
+			MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING > 0 and 
+			loadingTime > MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING then
+				
+				issuedWarningChecks.loadTimeWarning = true;
+				print('|cffff9900Warning! The current save-file loading has lasted for more than', MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING, 'seconds!|r');
+				if MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING < MagiLogNLoad.LOADING_TIME_SECONDS_TO_ABORT then
+					print(
+						'|cffff9900It will be aborted in',
+						MagiLogNLoad.LOADING_TIME_SECONDS_TO_ABORT - MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING, 
+						'seconds from now!|r'
+					);
+				end
+				
+		elseif loadingTime > MagiLogNLoad.LOADING_TIME_SECONDS_TO_ABORT then
+		
+			AbortCurrentLoading();
+			print('|cffff5500The current save-file loading has been aborted!|r');
+			
+		elseif mainTick - stream.streamLastTick > 250 then
+		
+			AbortCurrentLoading();
+			print('|cffff5500The currently loading save-file appears to have stalled and has been aborted!|r');
+			
+		end
+	end
 
 	local function TimerTick()
-		globalTick = globalTick + 1;
+		mainTick = mainTick + 1;
+		
+		local localPid = GetPlayerId(GetLocalPlayer());
+		if MagiLogNLoad.stateOfPlayer[localPid] ~= MagiLogNLoad.BASE_STATES.STANDBY then
+			local state = MagiLogNLoad.stateOfPlayer[localPid];
+			
+			if state == MagiLogNLoad.BASE_STATES.OFF and not issuedWarningChecks.initPanic then
+				
+				print('|cffff5500Error! Something went horribly wrong while MagiLogNLoad was initializing!|r');
+				print('|cffff5500Please find |r|cffaaff00@ModdieMads|r|cffff5500 and report this error code:|r|cffaaff00', 'BASE_STATES',state,'!|r');
+				issuedWarningChecks.initPanic = true;
+				
+			elseif state == MagiLogNLoad.BASE_STATES.CLEANING_TABLES and not issuedWarningChecks.tabKeyCleanerPanic then
+			
+				print('|cffff9900Warning! Something went mildly wrong while cleaning up memory in MagiLogNLoad!|r');
+				print('|cffff5500Please find |r|cffaaff00@ModdieMads|r|cffff5500 and report this error code:|r|cffaaff00', 'BASE_STATES',state,'!|r');
+				issuedWarningChecks.tabKeyCleanerPanic = true;
+				
+			end
+
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
+			
+			if MagiLogNLoad.SAVE_STATES.HASH[state] then
+				print('|cffff5500Error! Something went horribly wrong while trying to create a save-file!|r');
+				print('|cffff5500Please find |r|cffaaff00@ModdieMads|r|cffff5500 and report this error code:|r|cffaaff00', 'SAVE_STATES',state,'!|r');
+				local dumpFileName = MagiLogNLoad.SAVE_FOLDER_PATH .. 'magilognload_dump.pld';
+				print('|cffff9900Trying to dump data into', dumpFileName, '!|r');
+				
+				FileIO.SaveFile(dumpFileName, '--SAVE_STATES '..state..'..\r\n'..TableToConsole({
+					['proxyTablesOfPlayer']=magiLog.proxyTablesOfPlayer[localPid],
+					['hashtablesOfPlayer']=magiLog.hashtablesOfPlayer[localPid],
+					['unitsOfPlayer']=magiLog.unitsOfPlayer[localPid],
+					['referencedUnitsOfPlayer']=magiLog.referencedUnitsOfPlayer[localPid],
+					['destrsOfPlayer']=magiLog.destrsOfPlayer[localPid],
+					['referencedDestrsOfPlayer']=magiLog.referencedDestrsOfPlayer[localPid],
+					['itemsOfPlayer']=magiLog.itemsOfPlayer[localPid],
+					['referencedItemsOfPlayer']=magiLog.referencedItemsOfPlayer[localPid]
+				}));
+				
+				print('|cffaaaaaaDid it work? I think it did... Done!|r');
+				
+			elseif MagiLogNLoad.LOAD_STATES.HASH[state] then
+			
+				print('|cffff5500Error! Something went horribly wrong while trying to load a save-file!|r');
+				print('|cffff5500Please find |r|cffaaff00@ModdieMads|r|cffff5500 and report this error code:|r|cffaaff00', 'LOAD_STATES',state,'!|r');
+				
+			end
+		end
 
 		local len = #onLaterTickFuncs;
 
@@ -2189,62 +2330,72 @@ do
 			local i = 1;
 			while i <= len do
 				local fobj = onLaterTickFuncs[i];
-				if globalTick >= fobj[1] then
+				if mainTick >= fobj[1] then
+					remove(onLaterTickFuncs,i);
+					i = i-1;
+					len = len-1;
+					
 					if fobj[3] then
 						fobj[2](unpack(fobj[3]));
 						fobj[3] = nil;
 					else
 						fobj[2]();
 					end
-
-					remove(onLaterTickFuncs,i);
-					i = i-1;
-					len = len-1;
 				end
 				i = i+1;
 			end
 		end
-
+		
+		CheckLoadingProg();
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.SEND_SYNC_DATA;
 		if uploadingStream then
 			local msgsN = uploadingStream.messagesN;
 			local msgsSent = uploadingStream.messagesSent;
 			if msgsSent < msgsN then
 				local nextMsg = uploadingStream.messagesSent + 1;
-				for n=1,50 do
-
+				
+				for n=1,(uploadingStream.chunksSynced > 2 and 50 or 1) do
 					if not BlzSendSyncData('MLNL', uploadingStream.messages[nextMsg]) then
 						break;
 					end
-
+					
 					uploadingStream.messagesSent = nextMsg;
 					nextMsg = nextMsg+1;
-
-					if nextMsg > msgsSent then
+					
+					if nextMsg > msgsN then
 						break;
 					end
 				end
 			end
 		end
+		
+		MagiLogNLoad.TryLoadNextInQueue();
 
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.CLEANING_TABLES;
 		--#DEBUG
-		if (globalTick&1023) == 0 then
-			local tab = tabKeyCleaner[((globalTick >> 10)&tabKeyCleanerSize)+1];
+		if (mainTick&1023) == 0 then
+			local tab = tabKeyCleaner[((mainTick >> 10)&tabKeyCleanerSize)+1];
 			if tab then
 				if tab.arr then
-					local ind = (globalTick >> 10)&31;
+					local ind = (mainTick >> 10)&31;
+					
+					if ind == 31 then lastCleanedTab = nil end;
+					
 					local innerTab = nil;
 					repeat
 						ind = ind + 1;
 						innerTab = tab.arr[ind];
-					until innerTab ~= nil or ind > 31;
+					until innerTab ~= nil or ind >= 31;
 
 					if innerTab and lastCleanedTab ~= innerTab and next(innerTab) then
 						lastCleanedTab = innerTab;
 
-						if tab.assertRef then
+						if tab.referenceLogger then
 							for refName,v in pairs(innerTab) do
 								for ref,v2 in pairs(v) do
 									if _G[refName] ~= ref then
+										ResetReferencedLogging(v2);
 										v[ref] = nil;
 									end
 								end
@@ -2278,6 +2429,7 @@ do
 			end
 		end
 
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 		signals.abortLoop = nil;
 	end
 
@@ -2379,10 +2531,12 @@ do
 	
 
 	local function LoadUnitsLog(log)
-		local unitsN, unitEntriesN = 0,0;
+		local unitsN, unitEntriesN = 0, 0;
+		
 		for i,v in ipairs(log) do
 			unitsN = unitsN + 1;
-			logUnitsN = logUnitsN+1;
+			logUnitsN = logUnitsN + 1;
+			
 			unitEntriesN = unitEntriesN + LoadUnit(v);
 		end
 
@@ -2487,7 +2641,9 @@ do
 	end
 
 	local function PrintTally(totalTime, tally, prefix)
-		print('Total '..prefix..'ing Time:', totalTime, 'seconds.');
+		if totalTime then
+			print('Total '..prefix..'ing Time:', totalTime, 'seconds.');
+		end
 		if tally['terrain'] and tally['terrain'][1] > 0 then
 			print(prefix..'ed',tally['terrain'][1], 'terrain entries!')
 		end
@@ -2533,20 +2689,32 @@ do
 	--#AZZY2
 	
 	function MagiLogNLoad.LoadPlayerSaveFromString(p, argStr, startTime)
+		local pid = GetPlayerId(p);
+		local localPid = GetPlayerId(GetLocalPlayer());
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.LOAD_SAVE_FROM_STRING;
+		
 		downloadingStreamFrom = nil;
 
 		--#PROD
 		local str = LibDeflate.DecompressDeflate(COBSDescape(argStr));
-
+		
 		if not str then
 			print('|cffff5500Error!', 'Bad save-file! Cannot decompress.|r');
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			return false;
+		end
+		
+		--#DEBUG
+		if MagiLogNLoad.modes.debug then
+			FileIO.SaveFile('debug.pld', str);
 		end
 
 		str = str:gsub(sanitizer, '');
 
 		if not str then
 			print('|cffff5500Error!', 'Bad save-file! Aborting loading...|r');
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			return false;
 		end
 		
@@ -2556,25 +2724,29 @@ do
 			str = str:gsub(PERC..'-?'..PERC..'d+', MagiLogNLoad.oldTypeId2NewTypeId);
 		end
 		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.DESERIALIZE;
 		local logs = Deserialize(str);
 		
 		if not logs then
 			print('|cffff5500Error!', 'Bad save-file! Cannot deserialize.|r');
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			return false;
 		end
 		
 		--#AZZY1
-
+		
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.GETTING_MANIFESTS;
 		local manifest = logs[1];
 		if not manifest then
 			print('|cffff5500Error!', 'Bad save-file! Manifest is missing.|r');
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			return false;
 		end
 
-		if not manifest[1] or manifest[1] < MagiLogNLoad.version then
-			PrintDebug('|cffff9900WARNING:MagiLogNLoad.LoadPlayerSaveFromString!', 'Unexpected save-file version detected! Trying to load it anyway...|r');
+		if not manifest[1] or manifest[1] < MagiLogNLoad.engineVersion then
+			PrintDebug('|cffff9900WARNING:MagiLogNLoad.LoadPlayerSaveFromString!', 'Outdated save-file version detected! Trying to load it anyway...|r');
 		end
-		
 
 		logs = logs[2];
 
@@ -2595,6 +2767,7 @@ do
 		local oldLoggingPId = loggingPid;
 		MagiLogNLoad.SetLoggingPlayer(p);
 
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.LOADING_LOGS;
 		for i,v in ipairs(manifest[2]) do
 			if v ~= 0 then
 				local word = code2WordHash[v];
@@ -2613,25 +2786,22 @@ do
 		logItemsN = 0;
 
 		print('|cffaaaaaaLoading is done! MagiLogNLoad is cooling down and collecting reports...|r');
-		local totalTime = startTime and os.clock()- startTime or nil;
-		onLaterTickFuncs[#onLaterTickFuncs+1] = {globalTick + 100,
+		local totalTime = startTime and os.clock() - startTime or nil;
+		onLaterTickFuncs[#onLaterTickFuncs+1] = {mainTick + 100,
 			function()
 				downloadingStreamFrom = nil;
-				if #loadingQueue > 0 then
-
-					local queued = loadingQueue[1];
-					if queued then
-						table.remove(loadingQueue, 1);
-						if queued[1] == GetLocalPlayer() then
-							MagiLogNLoad.SyncLocalSaveFile(queued[2]);
-						end
-					end
-				end
-
+				MagiLogNLoad.stateOfPlayer[pid] = MagiLogNLoad.LOAD_STATES.SUCCESFUL_LOADING;
+				
+				local localPid = GetPlayerId(GetLocalPlayer());
+				
+				--MagiLogNLoad.TryLoadNextInQueue();
+				
 				print('|cff00fa33', GetPlayerName(p), 'has loaded their save-file successfully!|r');
-				if totalTime then
-					PrintTally(totalTime, tally, 'Load');
-				end
+				
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.PRINT_TALLY;
+				PrintTally(totalTime, tally, 'Load');
+				
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			end
 		};
 
@@ -2639,16 +2809,25 @@ do
 		loggingPid = oldLoggingPId;
 
 		downloadingStreamFrom = p;
-
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 		return true;
 	end
 
 	function MagiLogNLoad.SaveLocalPlayer(fileName)
 		local t0 = os.clock();
-
 		local p = GetLocalPlayer();
+		local localPid = GetPlayerId(p);
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.LOCAL_SAVE_PLAYER;
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.CREATE_UNITS_OF_PLAYER_LOG;
 		CreateUnitsOfPlayerLog(p);
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.CREATE_ITEMS_OF_PLAYER_LOG;
 		CreateItemsOfPlayerLog(p);
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.CREATE_EXTRAS_OF_PLAYER_LOG;
 		CreateExtrasOfPlayerLog(p);
 
 		fileName = fileName:gsub(fileNameSanitizer, '');
@@ -2656,55 +2835,79 @@ do
 			fileName = fileName..'.pld';
 		end
 		fileName = MagiLogNLoad.SAVE_FOLDER_PATH .. fileName;
-
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.CREATE_SERIAL_LOGS;
 		local logs, tally = CreateSerialLogs(p);
+		
 		--#PROD
-		FileIO.SaveFile(fileName, String2SafeUTF8(COBSEscape(LibDeflate.CompressDeflate(logs))));
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.COMPRESSING_LOGS;
+		
+		local str = String2SafeUTF8(COBSEscape(LibDeflate.CompressDeflate(logs)));
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.FILE_IO_SAVE_FILE;
+		FileIO.SaveFile(fileName, str);
 
 		print('|cff00fa33File|r |cffffdd00', fileName, '|r |cff00fa33saved successfully!|r');
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.PRINT_TALLY;
 		PrintTally(os.clock() - t0, tally, 'Sav');
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 	end
 
 	function MagiLogNLoad.SyncLocalSaveFile(fileName)
+		local localPid = GetPlayerId(GetLocalPlayer());
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.SYNC_LOCAL_SAVE_FILE;
+		
 		fileName = fileName:gsub(fileNameSanitizer, '');
 		if fileName:sub(-4,-1) ~= '.pld' then
 			fileName = fileName..'.pld';
 		end
 
 		local filePath = MagiLogNLoad.SAVE_FOLDER_PATH .. fileName;
-
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.SETTING_START_OSCLOCK;
 		local startTime = os.clock();
+		issuedWarningChecks.loadTimeWarning = false;
+		issuedWarningChecks.synced25 = false;
+		issuedWarningChecks.synced50 = false;
+		issuedWarningChecks.synced75 = false;
 
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.FILE_IO_LOAD_FILE;
 		local logStr = FileIO.LoadFile(filePath);
 
 		if not logStr then
 			print('|cffff5500Error!','Missing save-file or unable to read it! File Path:|r',filePath);
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 			return false;
 		end
 
-		local pid = GetPlayerId(GetLocalPlayer());
-
 		--#PROD
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.GET_LOG_STR;
 		logStr = string_char(unpack(GetCharCodesFromUTF8(logStr)));
 
 		local logStrLen = #logStr;
-
-		local tally = magiStreams[pid];
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.CREATE_UPLOADING_STREAM;
+		local tally = streamsOfPlayer[localPid];
 		if not tally then
 			tally = {};
-			magiStreams[pid] = tally;
+			streamsOfPlayer[localPid] = tally;
 		end
-
+		
 		logGen.streams = logGen.streams + 1;
 		uploadingStream = {
 			localFileName = fileName,
-			localChunkCount = 0,
+			--chunksN = 0,
+			--chunksSynced = 0,
 			localChunks = {},
-			checks = {},
 			messages = {},
-			messagesN = 0,
-			messagesSent = 0,
-			startTime = startTime
+			--messagesN = 0,
+			--messagesSent = 0,
+			
+			startTime = startTime,
+			streamStartTick = mainTick,
+			streamLastTick = mainTick
 		};
 		tally[logGen.streams] = uploadingStream;
 
@@ -2712,13 +2915,14 @@ do
 		local arrN = 0;
 		local ind0 = 1;
 		local ind1 = 1;
-
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.CREATE_MESSAGES;
 		local msgLen = 250-1;
 		local totalChunks = 1+math_floor(logStrLen/250);
 
 		local totalChunksB0 = (totalChunks>>7)+1;
 		local totalChunksB1 = (totalChunks&127)+1;
-
+		
 		while ind0 < logStrLen do
 			ind1 = ind0 + msgLen;
 			ind1 = ind1 > logStrLen and logStrLen or ind1;
@@ -2729,10 +2933,12 @@ do
 			ind0 = ind1 + 1;
 		end
 
-		uploadingStream.localChunkCount = arrN;
+		uploadingStream.chunksN = arrN;
+		uploadingStream.chunksSynced = 0;
 		uploadingStream.messagesN = arrN;
 		uploadingStream.messagesSent = 0;
-
+		
+		MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 		return true;
 	end
 
@@ -2741,13 +2947,14 @@ do
 			if p == GetLocalPlayer() then
 				print('|cffff5500Error! You are already loading a save-file!|r');
 			end
-		else
-			local ind = ArrayIndexOfPlucked(loadingQueue, p, 1);
-			loadingQueue[ind == -1 and (#loadingQueue+1) or ind] = {p, fileName};
-			if p == GetLocalPlayer() then
-				print('|cffffdd00Another player is currently loading a save-file!|r');
-				print('|cffffdd00Please wait! Your save-file|r', fileName,'|cffffdd00will soon load automatically.|r');
-			end
+			return;
+		end
+		
+		local ind = ArrayIndexOfPlucked(loadingQueue, p, 1);
+		loadingQueue[ind == -1 and (#loadingQueue+1) or ind] = {p, fileName};
+		if p == GetLocalPlayer() then
+			print('|cffffdd00Another player is currently loading a save-file!|r');
+			print('|cffffdd00Please wait! Your save-file|r', fileName,'|cffffdd00will soon load automatically.|r');
 		end
 	end
 
@@ -2789,13 +2996,22 @@ do
 
 		for name,vals in pairs(saveables.vars) do
 			local curVal = _G[name];
+			
 			if curVal and (type(curVal) == 'table' or GetHandleTypeStr(curVal) == 'group') then
+			
+				if log[name] then
+					ResetReferencedLogging(log[name]);
+				end
+				log[name] = nil;
 				saveables.vars[name] = nil;
+				
 				MagiLogNLoad.WillSaveThis(name, true);
+				
 			elseif curVal ~= vals[1] then
 				if log[name] then
 					ResetReferencedLogging(log[name]);
 				end
+				
 				if curVal ~= vals[2] then
 					logGen.vars = logGen.vars+1;
 					local entry = {logGen.vars, fCodes.SaveIntoNamedVar, {name, curVal}};
@@ -2840,15 +3056,16 @@ do
 			item = nil;
 		end));
 
-
-
 		trig = CreateTrigger();
 
 		TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_RESEARCH_FINISH);
 		TriggerAddAction(trig, (function()
-
-			local pid = GetPlayerId(GetOwningPlayer(GetResearchingUnit()));
 			local resId = GetResearched();
+			
+			if resId == 0 then return end;
+			
+			local pid = GetPlayerId(GetOwningPlayer(GetResearchingUnit()));
+			
 			local log = magiLog.researchOfPlayer[pid];
 
 			if not log then
@@ -2868,22 +3085,28 @@ do
 			TriggerRegisterPlayerChatEvent(trig, Player(i), '-save ', false);
 		end
 		TriggerAddAction(trig, function()
-			local fileName = GetEventPlayerChatString():sub(7, -1);
-
+			local p = GetTriggerPlayer();
+			local pid = GetPlayerId(p);
+			local localPid = GetPlayerId(GetLocalPlayer());
+			
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.SAVE_COMMAND_ENTERED;
+			
+			local fileName = StringTrim(GetEventPlayerChatString():sub(7, -1)):gsub(fileNameSanitizer, '');
+			
 			if fileName == nil or #fileName < 1 or #fileName > 250 or (fileName:sub(1,1)):find(PERC..'a') == nil then
 				if p == GetLocalPlayer() then
 					print('|cffff5500Error! Invalid name for save-file!|r');
 				end
-				return;
 			else
-				local p = GetTriggerPlayer();
-
-				MagiLogNLoad.UpdateSaveableVarsForPlayerId(GetPlayerId(p));
-
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.SAVE_STATES.UPDATE_SAVEABLE_VARS;
+				
+				MagiLogNLoad.UpdateSaveableVarsForPlayerId(pid);
+				
 				if p == GetLocalPlayer() then
 					MagiLogNLoad.SaveLocalPlayer(fileName);
 				end
 			end
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 		end);
 
 		trig = CreateTrigger();
@@ -2894,29 +3117,38 @@ do
 		TriggerAddAction(trig, (function()
 			local p = GetTriggerPlayer();
 			local pid = GetPlayerId(p);
-			local lp = GetLocalPlayer();
+			local localPid = GetPlayerId(GetLocalPlayer());
+			
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.LOAD_COMMAND_ENTERED;
 
 			if playerLoadInfo[pid].count <= 0 then
-				if p == lp then
+				if p == GetLocalPlayer() then
 					print('|cffff5500Error! You have already loaded too many save-files this game!|r');
 				end
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 				return;
 			end
 
-			local fileName = GetEventPlayerChatString():sub(7, -1);
+			local fileName = StringTrim(GetEventPlayerChatString():sub(7, -1));
 
-			if p == lp and playerLoadInfo[pid].fileNameHash[fileName] then
+			if p == GetLocalPlayer() and playerLoadInfo[pid].fileNameHash[fileName] then
 				print('|cffff9900Warning! You have already loaded this save-file this game!|r')
 				print('|cffff9900Any changes made might not load correctly until the map is restarted!|r');
 			end
 
 			if p == GetLocalPlayer() then
 				if downloadingStreamFrom then
+					MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.QUEUE_LOAD;
+					
 					MagiLogNLoad.QueuePlayerLoadCommand(p, fileName);
-				else
-					MagiLogNLoad.SyncLocalSaveFile(fileName);
+					
+					MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
+					return;
 				end
+				
+				MagiLogNLoad.SyncLocalSaveFile(fileName);
 			end
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 		end));
 
 		trig = CreateTrigger();
@@ -2925,8 +3157,8 @@ do
 		end
 		TriggerAddAction(trig, (function()
 			if GetTriggerPlayer() == GetLocalPlayer() then
-				print('|cffffdd00:: MagiLogNLoad v1.04 by ModdieMads @ HiveWorkshop.com|r');
-				print('::>> Generously commissioned by the folks @ Azeroth Roleplay!');
+				print('|cffffdd00:: MagiLogNLoad v1.08 by ModdieMads @ HiveWorkshop.com|r');
+				print('::>> Generously commissioned by the folks @ AzerothRoleplay!');
 			end
 		end));
 
@@ -2936,65 +3168,98 @@ do
         end
         TriggerAddAction(trig, function()
 			local p = GetTriggerPlayer();
+			local pid = GetPlayerId(p);
+			local localPid = GetPlayerId(GetLocalPlayer());
+			
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.LOAD_STATES.SYNC_EVENT;
+			
+			local str = BlzGetTriggerSyncData();
 
-			if not downloadingStreamFrom then
+			local streamId = string_byte(str, 1, 1);
+			if streamId > logGen.streams then
+				logGen.streams = streamId;
+			end
+			
+			local stream = streamsOfPlayer[pid];
+			
+			if stream and stream[streamId] and stream[streamId].aborted then
+				PrintDebug('|cffff9900Warning:PlayerSyncEvent!','Message received from aborted stream!|r');
+				
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
+				return;
+			
+			elseif not downloadingStreamFrom then
+				
 				print('|cffffdd00', GetPlayerName(p), 'has started loading a save-file. Please wait!|r');
+				
 			elseif downloadingStreamFrom ~= p then
 				if p == GetLocalPlayer() and uploadingStream then
-					PrintDebug('|cffff5500Error! You have jammed the network!|r');
+					print('|cffff5500Error! You have jammed the network!|r');
 
 					MagiLogNLoad.QueuePlayerLoadCommand(p, uploadingStream.localFileName);
 					uploadingStream = nil;
 				end
+				
+				MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
 				return;
 			end
+			
 			downloadingStreamFrom = p;
-
-			local pid = GetPlayerId(p);
-
-			local str = BlzGetTriggerSyncData();
-
-			local streamId = string_byte(str, 1, 1);
 
 			local chunkId = Concat7BitPair(string_byte(str, 2, 3));
 
-			local chunkN = Concat7BitPair(string_byte(str, 4, 5));
-
-			if streamId < logGen.streams then
-				logGen.streams = streamId;
+			local chunksN = Concat7BitPair(string_byte(str, 4, 5));
+			
+			if not stream then
+				stream = {};
+				streamsOfPlayer[pid] = stream;
 			end
 
-			local tally = magiStreams[pid];
-			if not tally then
-				tally = {};
-				magiStreams[pid] = tally;
-			end
-
-			if not tally[streamId] then
-				tally[streamId] = {
-					localChunkCount = chunkN,
+			if not stream[streamId] then
+				stream[streamId] = {
+					chunksN = chunksN,
+					chunksSynced = 0,
 					localChunks = {},
-					checks = {}
+					streamStartTick = mainTick
 				};
 			end
-			tally = tally[streamId];
+			stream = stream[streamId];
+			stream.streamLastTick = mainTick;
 
-			tally.localChunks[chunkId] = str:sub(6, #str);
-			tally.localChunkCount = tally.localChunkCount - 1;
-
-
-			if tally.localChunkCount <= 0 then
-				str = concat(tally.localChunks);
+			stream.localChunks[chunkId] = str:sub(6, #str);
+			stream.chunksSynced = stream.chunksSynced + 1;
+			--stream.chunksN = stream.chunksN - 1;
+			
+			if stream.chunksSynced >= stream.chunksN then
+				str = concat(stream.localChunks);
+				stream.localChunks = {};
+				
 				local startTime;
 				if uploadingStream then
 					startTime = uploadingStream.startTime;
 					playerLoadInfo[pid].fileNameHash[uploadingStream.localFileName] = true;
 					uploadingStream = nil;
 				end
-
+					
 				MagiLogNLoad.LoadPlayerSaveFromString(p, str, startTime);
+				return;
+			elseif not issuedWarningChecks.synced75 and stream.chunksSynced/stream.chunksN > .75 then
+				issuedWarningChecks.synced75 = true;
+				
+				print('|cffffff33','Loading is 75\x25 done. Please wait!|r');
+				
+			elseif not issuedWarningChecks.synced50 and stream.chunksSynced/stream.chunksN > .50 then
+				issuedWarningChecks.synced50 = true;
+				
+				print('|cffffff00','Loading is 50\x25 done. Please wait!|r');
+				
+			elseif not issuedWarningChecks.synced25 and stream.chunksSynced/stream.chunksN > .25 then
+				issuedWarningChecks.synced25 = true;
+				
+				print('|cffffcc00','Loading is 25\x25 done. Please wait!|r');
 			end
-
+			
+			MagiLogNLoad.stateOfPlayer[localPid] = MagiLogNLoad.BASE_STATES.STANDBY;
         end);
 	end
 
@@ -3175,6 +3440,8 @@ do
 			PrintDebug('|cffff5500ERROR:MagiLogNLoad.WillSaveThis!', 'Passed name of variable is NIL!|r');
 			return;
 		end
+		
+		willSave = willSave == nil and true or willSave;
 
 		local varName = argName;
 		local obj = _G[varName];
@@ -3255,10 +3522,8 @@ do
 						log = log[whichHashTable];
 
 						if v == nil then
-							if log[parentKey] then
-								if log[parentKey][k] ~= nil then
-									ResetReferencedLogging(log[parentKey][k]);
-								end
+							if log[parentKey] and log[parentKey][k] ~= nil then
+								ResetReferencedLogging(log[parentKey][k]);
 								log[parentKey][k] = nil;
 							end
 						else
@@ -3325,7 +3590,7 @@ do
 		MagiLogNLoad.HashtableSaveInto(value, childKey, parentKey, _G[hashtableName]);
 	end
 
-	local function KillDestructable_log(destr)
+	local function KillDestructable_andLog(destr)
 		if loggingPid < 0 or destr == nil or tempIsGateHash[destr] then return end;
 		local log = magiLog.destrsOfPlayer;
 		local pid = loggingPid;
@@ -3348,25 +3613,25 @@ do
 
 	function MagiLogNLoad.DefineModes(_modes)
 		if _modes then
-			globalModes = _modes;
+			MagiLogNLoad.modes = _modes;
 		elseif guiModes then
-			local guiModesHash = Array2Hash(guiModes, 0, guiModesSlots, '');
+			local guiModesHash = Array2Hash(guiModes, 0, 15, '');
 
-			globalModes.debug = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.DEBUG] ~= nil;
-			globalModes.savePreplacedUnits = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_UNITS] ~= nil;
-			globalModes.savePreplacedItems = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_ITEMS] ~= nil;
-			globalModes.savePreplacedDestrs = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_DESTRS] ~= nil;
+			MagiLogNLoad.modes.debug = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.DEBUG] ~= nil;
+			MagiLogNLoad.modes.savePreplacedUnits = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_UNITS] ~= nil;
+			MagiLogNLoad.modes.savePreplacedItems = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_ITEMS] ~= nil;
+			MagiLogNLoad.modes.savePreplacedDestrs = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_PREPLACED_DESTRS] ~= nil;
 
-			globalModes.saveAllUnitsOfPlayer = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ALL_UNITS_OF_PLAYER] ~= nil;
-			globalModes.saveUnitsDisownedByPlayers = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_UNITS_DISOWNED_BY_PLAYERS] ~= nil;
+			MagiLogNLoad.modes.saveAllUnitsOfPlayer = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ALL_UNITS_OF_PLAYER] ~= nil;
+			MagiLogNLoad.modes.saveUnitsDisownedByPlayers = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_UNITS_DISOWNED_BY_PLAYERS] ~= nil;
 
-			globalModes.saveItemsDroppedManually = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ITEMS_DROPPED_MANUALLY] ~= nil;
-			globalModes.saveAllItemsOnGround = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ALL_ITEMS_ON_GROUND] ~= nil;
+			MagiLogNLoad.modes.saveItemsDroppedManually = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ITEMS_DROPPED_MANUALLY] ~= nil;
+			MagiLogNLoad.modes.saveAllItemsOnGround = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_ALL_ITEMS_ON_GROUND] ~= nil;
 
-			globalModes.saveDestrsKilledByUnits = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_DESTRS_KILLED_BY_UNITS] ~= nil;
+			MagiLogNLoad.modes.saveDestrsKilledByUnits = guiModesHash[MagiLogNLoad.MODE_GUI_STRS.SAVE_DESTRS_KILLED_BY_UNITS] ~= nil;
 		end
 
-		if globalModes.saveDestrsKilledByUnits then
+		if MagiLogNLoad.modes.saveDestrsKilledByUnits then
 			PrintDebug('|cffff9900WARNING:MagiLogNLoad.DefineModes!','Enabling saveDestrsKilledByUnits might be heavy on performance if there are too many destructables!|r');
 
 			if not modalTriggers.saveDestrsKilledByUnits then
@@ -3377,7 +3642,7 @@ do
 					TriggerRegisterDeathEvent(trig, GetEnumDestructable());
 				end);
 				TriggerAddAction(trig, function()
-					KillDestructable_log(GetTriggerDestructable());
+					KillDestructable_andLog(GetTriggerDestructable());
 				end);
 			end
 
@@ -3390,7 +3655,7 @@ do
 			end
 		end
 
-		if globalModes.savePreplacedItems then
+		if MagiLogNLoad.modes.savePreplacedItems then
 			PrintDebug('|cffff9900WARNING:MagiLogNLoad.DefineModes!','Enabling savePreplacedItems might be heavy on performance if there are too many items!|r');
 
 			if not modalTriggers.savePreplacedItems then
@@ -3407,7 +3672,7 @@ do
 					local item = nil;
 
 					for k,v in pairs(preplacedWidgets.items) do
-						if k == widget then
+						if k == widget and type(v) == 'table' and next(v) ~= nil then
 							item = k;
 							break;
 						end
@@ -3429,11 +3694,12 @@ do
 			end
 		end
 
-		if globalModes.debug then
+		if MagiLogNLoad.modes.debug then
 			print('--- MLNL MODES ---');
-			for k,v in pairs(globalModes) do
+			for k,v in pairs(MagiLogNLoad.modes) do
 				print(k, ':', v);
 			end
+			print('--- ---------- ---');
 		end
 	end
 
@@ -3619,10 +3885,16 @@ do
 
 	local function InitAllFunctions()
 
+		-- -=-==-=  QoL Overrides  -=-==-=
+		oriG.ConvertPlayerColor = _G.ConvertPlayerColor;
+		_G.ConvertPlayerColor = function(pid)
+			return oriG.ConvertPlayerColor(pid or 0);
+		end
+		
 		-- -=-==-=  UNIT LOGGING HOOKS  -=-==-=
-
+		
 		PrependFunction('SetUnitColor', function(whichUnit, whichColor)
-			if not whichUnit then return end;
+			if not whichUnit or not whichColor or not deconvertHash[whichColor] then return end;
 
 			local log = magiLog.units;
 
@@ -3632,13 +3904,15 @@ do
 			end
 			local logEntries = log[whichUnit];
 
-			logEntries[fCodes.SetUnitColor] = {50, fCodes.SetUnitColor, {{fCodes.GetLoggingUnit}, {fCodes.ConvertPlayerColor, {deconvertPlayerColorHash[whichColor]}}}};
+			logEntries[fCodes.SetUnitColor] = {50, fCodes.SetUnitColor, {{fCodes.GetLoggingUnit}, {fCodes.ConvertPlayerColor, {deconvertHash[whichColor]}}}};
 
 		end);
 
 		PrependFunction('SetUnitVertexColor', function(u, r, g, b, a)
-			if not u then return end;
+			if not u or not r or not g or not b then return end;
 
+			a = a or 255;
+			
 			local log = magiLog.units;
 
 			if not log[u] then
@@ -3651,18 +3925,23 @@ do
 		PrependFunction('SetUnitTimeScale', function(u, sca)
 			if not u then return end;
 
+			sca = sca or 1;
+			
 			local log = magiLog.units;
 
 			if not log[u] then
 				log[u] = {};
 			end
 
-			log[u][fCodes.SetUnitTimeScale] = {52, fCodes.SetUnitTimeScale, {{fCodes.GetLoggingUnit}, sca}};
+			log[u][fCodes.SetUnitTimeScale] = {52, fCodes.SetUnitTimeScale, {{fCodes.GetLoggingUnit}, {fCodes.Div10000, {Round(10000*sca)}}}};
 		end);
 
 		PrependFunction('SetUnitScale', function(u, sx, sy, sz)
-			if not u then return end;
-
+			if not u or not sx then return end;
+			
+			sy = sy or sx;
+			sz = sz or sx;
+			
 			local log = magiLog.units;
 
 			if not log[u] then
@@ -3688,7 +3967,7 @@ do
 		end);
 
 		PrependFunction('SetUnitAnimationByIndex', function(u, int)
-			if not u then return end;
+			if not u or not int then return end;
 
 			local log = magiLog.units;
 
@@ -3701,7 +3980,7 @@ do
 		end);
 
 		PrependFunction('SetUnitAnimationWithRarity', function(u, str, rarity)
-			if not u then return end;
+			if not u or not str or not rarity then return end;
 
 			local log = magiLog.units;
 
@@ -3713,14 +3992,14 @@ do
 			log[fCodes.SetUnitAnimation] = {
 				[GetUnitCurrentOrder(u)] = {
 					53, fCodes.SetUnitAnimationWithRarity, {
-						{fCodes.GetLoggingUnit}, {fCodes.utf8char, GetUTF8Codes(str)}, {fCodes.ConvertRarityControl, {deconvertRarityControlHash[rarity]}}
+						{fCodes.GetLoggingUnit}, {fCodes.utf8char, GetUTF8Codes(str)}, {fCodes.ConvertRarityControl, {deconvertHash[rarity] or deconvertHash[RARITY_RARE]}}
 					}
 				}
 			};
 		end);
 
 		PrependFunction('UnitAddAbility', function(u, abilid)
-			if not u then return end;
+			if not u or not abilid then return end;
 
 			local log = magiLog.units;
 
@@ -3737,8 +4016,9 @@ do
 		end);
 
 		PrependFunction('UnitMakeAbilityPermanent', function(u, permanent, abilid)
-			if not u then return end;
-
+			if not u or not abilid then return end;
+			if permanent == nil then permanent = true end;
+			
 			local log = magiLog.units;
 
 			if not log[u] then
@@ -3754,7 +4034,7 @@ do
 		end);
 
 		PrependFunction('SetUnitAbilityLevel', function(u, abilid, level)
-			if not u then return end;
+			if not u or not abilid or not level then return end;
 
 			local log = magiLog.units;
 
@@ -3771,7 +4051,7 @@ do
 		end);
 
 		PrependFunction('UnitRemoveAbility', function(u, abilid)
-			if not u then return end;
+			if not u or not abilid then return end;
 
 			local log = magiLog.units;
 
@@ -3792,7 +4072,7 @@ do
 		end);
 
 		PrependFunction('BlzSetUnitArmor', function(u, armor)
-			if not u then return end;
+			if not u or not armor then return end;
 
 			local log = magiLog.units;
 
@@ -3804,7 +4084,7 @@ do
 		end);
 
 		PrependFunction('BlzSetUnitName', function(u, str)
-			if not u then return end;
+			if not u or not str then return end;
 
 			local log = magiLog.units;
 
@@ -3816,7 +4096,7 @@ do
 		end);
 
 		PrependFunction('SetUnitMoveSpeed', function(u, speed)
-			if not u then return end;
+			if not u or not speed then return end;
 
 			local log = magiLog.units;
 
@@ -3866,7 +4146,9 @@ do
 
 		PrependFunction('SetUnitOwner', function(u, p, changeColor)
 			if not u or not p then return end;
-
+			
+			if changeColor == nil then changeColor = true end;
+			
 			local newPid = GetPlayerId(p);
 			local oldPid = GetPlayerId(GetOwningPlayer(u));
 
@@ -3891,56 +4173,15 @@ do
 
 
 		-- -=-==-=  DESTRUCTABLE LOGGING HOOKS  -=-==-=
-
-		PrependFunction('RemoveDestructable', function(destr)
-			if loggingPid < 0 or destr == nil then return end;
-
-			local log = magiLog.destrsOfPlayer;
-			local pid = loggingPid;
-			if not log[pid] then
-				log[pid] = {};
-			end
-			log = log[pid];
-			if not log[destr] then
-				log[destr] = {};
-			end
-
-			if log[destr][fCodes.LoadCreateDestructable] then
-				log[destr] = nil;
-			else
-				log[destr][fCodes.RemoveDestructable] = {20, fCodes.RemoveDestructable, {
-					{fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}
-				}};
-			end
-		end);
-
-		PrependFunction('KillDestructable', KillDestructable_log);
-
-		PrependFunction('DestructableRestoreLife', function (destr, life, birth)
-			if loggingPid < 0 or destr == nil or tempIsGateHash[destr] then return end;
-
-			local log = magiLog.destrsOfPlayer;
-			local pid = loggingPid;
-			if not log[pid] then
-				log[pid] = {};
-			end
-			log = log[pid];
-			if not log[destr] then
-				log[destr] = {};
-			end
-
-			if log[destr][fCodes.KillDestructable] then
-				log[destr][fCodes.KillDestructable] = nil;
-			else
-				log[destr][fCodes.DestructableRestoreLife] = {15, fCodes.DestructableRestoreLife, {
-					{fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}, Round(life), {fCodes.I2B, {B2I(birth)}}
-				}};
-			end
-		end);
-
+		
+		
 		WrapFunction('CreateDestructable', function(destr, destrid, argX, argY, face, sca, vari)
-			if loggingPid < 0 or destr == nil then return end;
-
+			if loggingPid < 0 or destr == nil or not destrid or destrid == 0 then return end;
+			
+			face = face or 0;
+			sca = sca or 1;
+			vari = vari or -1;
+	
 			local log = magiLog.destrsOfPlayer;
 			local pid = loggingPid;
 			if not log[pid] then
@@ -3961,9 +4202,56 @@ do
 
 			return destr;
 		end);
+		
+		PrependFunction('RemoveDestructable', function(destr)
+			if loggingPid < 0 or destr == nil then return end;
+
+			local log = magiLog.destrsOfPlayer;
+			local pid = loggingPid;
+			if not log[pid] then
+				log[pid] = {};
+			end
+			log = log[pid];
+			if not log[destr] then
+				log[destr] = {};
+			end
+
+			if log[destr][fCodes.LoadCreateDestructable] then
+				log[destr] = nil;
+			else
+				log[destr][fCodes.RemoveDestructable] = {90, fCodes.RemoveDestructable, {
+					{fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}
+				}};
+			end
+		end);
+
+		PrependFunction('KillDestructable', KillDestructable_andLog);
+
+		PrependFunction('DestructableRestoreLife', function (destr, life, birth)
+			if loggingPid < 0 or destr == nil or GetDestructableTypeId(destr) == 0 or  not life or tempIsGateHash[destr] then return end;
+
+			local log = magiLog.destrsOfPlayer;
+			local pid = loggingPid;
+			if not log[pid] then
+				log[pid] = {};
+			end
+			log = log[pid];
+			if not log[destr] then
+				log[destr] = {};
+			end
+
+			if log[destr][fCodes.KillDestructable] then
+				log[destr][fCodes.KillDestructable] = nil;
+			else
+				log[destr][fCodes.DestructableRestoreLife] = {15, fCodes.DestructableRestoreLife, {
+					{fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}, Round(life), {fCodes.I2B, {B2I(birth)}}
+				}};
+			end
+		end);
+
 
 		PrependFunction('ModifyGateBJ', function (op, destr)
-			if loggingPid < 0 or destr == nil then return end;
+			if loggingPid < 0 or not destr or GetDestructableTypeId(destr) == 0 or not op then return end;
 
 			tempIsGateHash[destr] = true;
 
@@ -3976,20 +4264,41 @@ do
 			if not log[destr] then
 				log[destr] = {};
 			end
-
-
-			if log[destr][fCodes.LoadCreateDestructable] then
-				log[destr][fCodes.ModifyGateBJ] = {30, fCodes.ModifyGateBJ, {
-					op, {fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}
-				}};
-			end
+			
+			log[destr][fCodes.ModifyGateBJ] = {30, fCodes.ModifyGateBJ, {
+				op, {fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}
+			}};
 		end);
+		
+		PrependFunction('SetDestructableInvulnerable', function (destr, flag)
+			if loggingPid < 0 or not destr or GetDestructableTypeId(destr) == 0 or flag == nil then return end;
+
+			local log = magiLog.destrsOfPlayer;
+			local pid = loggingPid;
+			if not log[pid] then
+				log[pid] = {};
+			end
+			log = log[pid];
+			if not log[destr] then
+				log[destr] = {};
+			end
+			
+			log[destr][fCodes.SetDestructableInvulnerable] = {40, fCodes.SetDestructableInvulnerable, {
+				{fCodes.GetDestructableByXY, {Round(GetDestructableX(destr)), Round(GetDestructableY(destr))}}, {fCodes.I2B, {B2I(flag)}}
+			}};
+		end);
+		
+		
 
 		-- -=-==-=  TERRAIN LOGGING HOOKS  -=-==-=
 
 		PrependFunction('SetTerrainType', function(x, y, terrainType, variation, area, shape)
-			if loggingPid < 0 then return end;
-
+			if loggingPid < 0 or not x or not y or not terrainType then return end;
+			
+			variation = variation or -1;
+			shape = shape or 0;
+			area = area or 1;
+			
 			local log = magiLog.terrainOfPlayer;
 			if not log[loggingPid] then
 				log[loggingPid] = {};
@@ -4002,13 +4311,47 @@ do
 			logGen.terrain = logGen.terrain + 1;
 			log[XY2Index30(x,y)] = {logGen.terrain, fCodes.SetTerrainType, {x, y, terrainType, variation, area, shape}};
 		end);
+		
+		-- -=-==-=  RESEARCH LOGGING HOOKS  -=-==-=
+		
+		PrependFunction('AddPlayerTechResearched', function(p, resId, levels)
+			if not p or not resId or resId == 0 or not levels then return end;
+			
+			local pid = GetPlayerId(p);
+			
+			local log = magiLog.researchOfPlayer[pid];
 
+			if not log then
+				log = {};
+				magiLog.researchOfPlayer[pid] = log;
+			end
+			
+			logGen.res = logGen.res + 1;
+			log[logGen.res] = {logGen.res, fCodes.AddPlayerTechResearched, {{fCodes.GetLoggingPlayer}, resId, levels}};
+		end);
+
+		PrependFunction('SetPlayerTechResearched', function(p, resId, levels)
+			if not p or not resId or resId == 0 or not levels then return end;
+			
+			local pid = GetPlayerId(p);
+			
+			local log = magiLog.researchOfPlayer[pid];
+
+			if not log then
+				log = {};
+				magiLog.researchOfPlayer[pid] = log;
+			end
+			
+			logGen.res = logGen.res + 1;
+			log[logGen.res] = {logGen.res, fCodes.SetPlayerTechResearched, {{fCodes.GetLoggingPlayer}, resId, levels}};
+		end);
+		
 
 		-- -=-==-=  EXTRAS LOGGING HOOKS  -=-==-=
 
 		PrependFunction('SetBlightRect', function (p, r, addBlight)
 			if not r or not p then return end;
-
+			
 			local pid = GetPlayerId(p);
 
 			local log = magiLog.extrasOfPlayer;
@@ -4033,7 +4376,7 @@ do
 		end);
 
 		PrependFunction('SetBlightPoint', function (p, x, y, addBlight)
-			if not p then return end;
+			if not p or not x or not y then return end;
 			local pid = GetPlayerId(p);
 
 			local log = magiLog.extrasOfPlayer;
@@ -4057,7 +4400,7 @@ do
 		end);
 
 		local SetBlight = function(p, x, y, radius, addBlight)
-			if not p then return end;
+			if not p or not x or not y or not radius then return end;
 			local pid = GetPlayerId(p);
 
 			local log = magiLog.extrasOfPlayer;
@@ -4084,6 +4427,8 @@ do
 
 		PrependFunction('SetBlight', SetBlight);
 		PrependFunction('SetBlightLoc', function (p, loc, radius, addBlight)
+			if not p or not loc or not radius then return end;
+			
 			SetBlight(p, GetLocationX(loc), GetLocationY(loc), radius, addBlight);
 		end);
 
@@ -4113,7 +4458,7 @@ do
 		fCodes.LoadSetPlayerState, fCodes.ConvertPlayerState, fCodes.LoadSetWaygate, fCodes.SetUnitOwner, fCodes.SetUnitScale, fCodes.SaveIntoNamedHashtable,
 		fCodes.SetBlightPoint, fCodes.SetBlight, fCodes.SetBlightRect, fCodes.SetUnitAbilityLevel, fCodes.LoadPreplacedUnit, fCodes.KillDestructable, fCodes.Div10000,
 		fCodes.LoadUnitAddPreplacedItem, fCodes.GetPreplacedItem, fCodes.Nil, fCodes.SaveIntoNamedVar, fCodes.ShowUnit, fCodes.LoadPreplacedItem,
-		fCodes.DestructableRestoreLife,fCodes.RemoveItem = unpack(Range(1,128));
+		fCodes.DestructableRestoreLife,fCodes.RemoveItem, fCodes.SetPlayerTechResearched, fCodes.SetDestructableInvulnerable = unpack(Range(1,128));
 
 		int2Function = TableSetManyPaired(
 			{
@@ -4128,7 +4473,7 @@ do
 				fCodes.LoadSetPlayerState, fCodes.ConvertPlayerState, fCodes.LoadSetWaygate, fCodes.SetUnitOwner, fCodes.SetUnitScale,fCodes.SaveIntoNamedHashtable,
 				fCodes.SetBlightPoint, fCodes.SetBlight, fCodes.SetBlightRect, fCodes.SetUnitAbilityLevel, fCodes.LoadPreplacedUnit, fCodes.KillDestructable,fCodes.Div10000,
 				fCodes.LoadUnitAddPreplacedItem, fCodes.GetPreplacedItem, fCodes.Nil, fCodes.SaveIntoNamedVar, fCodes.ShowUnit, fCodes.LoadPreplacedItem,
-				fCodes.DestructableRestoreLife, fCodes.RemoveItem
+				fCodes.DestructableRestoreLife, fCodes.RemoveItem, fCodes.SetPlayerTechResearched, fCodes.SetDestructableInvulnerable
 			}
 			,
 			{
@@ -4143,7 +4488,7 @@ do
 				LoadSetPlayerState, ConvertPlayerState, LoadSetWaygate, SetUnitOwner, SetUnitScale, SaveIntoNamedHashtable,
 				SetBlightPoint, SetBlight, SetBlightRect, SetUnitAbilityLevel, LoadPreplacedUnit, KillDestructable, Div10000,
 				LoadUnitAddPreplacedItem, GetPreplacedItem, Nil, SaveIntoNamedVar, ShowUnit, LoadPreplacedItem,
-				DestructableRestoreLife, RemoveItem
+				DestructableRestoreLife, RemoveItem, SetPlayerTechResearched, SetDestructableInvulnerable
 			}
 		);
 
@@ -4188,6 +4533,10 @@ do
 	end
 
 	local function InitAllTables()
+		MagiLogNLoad.BASE_STATES.HASH = TableInvert(MagiLogNLoad.BASE_STATES);
+		MagiLogNLoad.SAVE_STATES.HASH = TableInvert(MagiLogNLoad.SAVE_STATES);
+		MagiLogNLoad.LOAD_STATES.HASH = TableInvert(MagiLogNLoad.LOAD_STATES);
+		
 		for i = 0, bj_MAX_PLAYER_SLOTS - 1 do
 			playerLoadInfo[i] = {
 				count = MagiLogNLoad.MAX_LOADS_PER_PLAYER,
@@ -4219,6 +4568,7 @@ do
 		if pid ~= loggingPid and loggingPid ~= -1 then
 			MagiLogNLoad.UpdateSaveableVarsForPlayerId(loggingPid);
 		end
+		
 		loggingPid = pid;
 		return loggingPid;
 	end
@@ -4232,8 +4582,9 @@ do
 	end
 
 	function MagiLogNLoad.Init(_debug, _skipInitGUI)
-		if IngameConsole then IngameConsole.ForceStart() end;
-
+		for i = 0, bj_MAX_PLAYER_SLOTS - 1 do
+			MagiLogNLoad.stateOfPlayer[i] = MagiLogNLoad.BASE_STATES.OFF;
+		end
 		InitAllRects();
 		InitAllFunctions();
 
@@ -4254,8 +4605,8 @@ do
 			{key=preplacedWidgets.units, map=preplacedWidgets.unitMap},
 			{key=preplacedWidgets.items, map=preplacedWidgets.itemMap},
 
-			{arr=magiLog.proxyTablesOfPlayer, assertRef=true},
-			{arr=magiLog.hashtablesOfPlayer, assertRef=true},
+			{arr=magiLog.proxyTablesOfPlayer, referenceLogger=true},
+			{arr=magiLog.hashtablesOfPlayer, referenceLogger=true},
 
 			unit2TransportHash,
 			magiLog.units,
@@ -4272,8 +4623,13 @@ do
 		};
 		tabKeyCleanerSize = 15;
 
-		globalTimer = CreateTimer();
-		TimerStart(globalTimer, TICK_DUR, true, TimerTick);
+		mainTimer = CreateTimer();
+		TimerStart(mainTimer, TICK_DUR, true, TimerTick);
+		
+		for i = 0, bj_MAX_PLAYER_SLOTS - 1 do
+			MagiLogNLoad.stateOfPlayer[i] = MagiLogNLoad.BASE_STATES.STANDBY;
+		end
+		MagiLogNLoad.Init = DoNothing();
 	end
 end
 
