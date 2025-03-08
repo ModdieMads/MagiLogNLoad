@@ -1,9 +1,9 @@
 if Debug and Debug.beginFile then Debug.beginFile('MLNL_Config') end
 --[[
-	Friendly configuration file used by the MagiLogNLoad 1.01 system.
+	Friendly configuration file used by the MagiLogNLoad system.
 ]]
 do
-	MagiLogNLoad = {version = 1010};
+	MagiLogNLoad = {configVersion = 1080};
 
 	MagiLogNLoad.SAVE_FOLDER_PATH = 'MagiLogNLoad/';  -- needs to end with / if you want a folder
 
@@ -17,9 +17,47 @@ do
 
 	-- List all cargo ability ids in your map so that transports can be saved and loaded properly.
 	MagiLogNLoad.ALL_CARGO_ABILS = {
-		FourCC('Aloa'), FourCC('Slo3'),FourCC('Sch3'), FourCC('Sch5')
+		FourCC('Aloa'), FourCC('Slo3'),FourCC('Sch3'), FourCC('Sch5'),
+		FourCC('S008'), FourCC('S006'),FourCC('S005'), FourCC('S000'),
+		FourCC('S001'), FourCC('A0EZ'),FourCC('A06W')
 	};
 
+	-- Enforceable limits. Recommended for multiplayer maps without a tight-knit community.
+	MagiLogNLoad.LOADING_TIME_SECONDS_TO_WARNING = 30;	-- use 0 or -1 to disable it.	
+	MagiLogNLoad.LOADING_TIME_SECONDS_TO_ABORT = 120;	-- use 0 or -1 to disable it.
+	
+	MagiLogNLoad.MAX_LOADS_PER_PLAYER = 10;
+
+	MagiLogNLoad.MAX_TERRAIN_PER_FILE = 10240;
+
+	MagiLogNLoad.MAX_DESTRS_PER_FILE = 5120;
+	MagiLogNLoad.MAX_ENTRIES_PER_DESTR = 160;
+
+	MagiLogNLoad.MAX_RESEARCH_PER_FILE = 5120;
+
+	MagiLogNLoad.MAX_UNITS_PER_FILE = 5120;
+	MagiLogNLoad.MAX_ENTRIES_PER_UNIT = 1280;
+
+	MagiLogNLoad.MAX_ITEMS_PER_FILE = 2560;
+	MagiLogNLoad.MAX_ENTRIES_PER_ITEM = 80;
+
+	MagiLogNLoad.MAX_HASHTABLE_ENTRIES_PER_FILE = 5120;
+
+	MagiLogNLoad.MAX_VARIABLE_ENTRIES_PER_FILE = 5120;
+
+	MagiLogNLoad.MAX_PROXYTABLE_ENTRIES_PER_FILE = 2560;
+
+	MagiLogNLoad.MAX_EXTRAS_PER_FILE = 2560;
+
+	-- Allows the system to replace type ids in the save-file with new ones.
+	-- Use this to support save-files created in older versions of your map that might
+	-- not have the same stuff as the new versions.
+	MagiLogNLoad.oldTypeId2NewTypeId = {
+		--['hpea'] = 'hkni',
+		--['hfoo'] = 'hmkg',
+		--['hsor'] = 'harc'
+	};
+	
 	MagiLogNLoad.MODE_GUI_STRS = {
 		-- Enable Debug prints. Very recommended.
 		DEBUG = 'DEBUG',
@@ -55,39 +93,6 @@ do
 
 		-- Save all items on the ground.
 		SAVE_ALL_ITEMS_ON_GROUND = 'SAVE_ALL_ITEMS_ON_GROUND',
-	};
-
-	-- Enforceable limits. Recommended for multiplayer maps without a tight-knit community.
-	MagiLogNLoad.MAX_LOADS_PER_PLAYER = 10;
-
-	MagiLogNLoad.MAX_TERRAIN_PER_FILE = 10240;
-
-	MagiLogNLoad.MAX_DESTRS_PER_FILE = 5120;
-	MagiLogNLoad.MAX_ENTRIES_PER_DESTR = 160;
-
-	MagiLogNLoad.MAX_RESEARCH_PER_FILE = 5120;
-
-	MagiLogNLoad.MAX_UNITS_PER_FILE = 5120;
-	MagiLogNLoad.MAX_ENTRIES_PER_UNIT = 1280;
-
-	MagiLogNLoad.MAX_ITEMS_PER_FILE = 2560;
-	MagiLogNLoad.MAX_ENTRIES_PER_ITEM = 80;
-
-	MagiLogNLoad.MAX_HASHTABLE_ENTRIES_PER_FILE = 5120;
-
-	MagiLogNLoad.MAX_VARIABLE_ENTRIES_PER_FILE = 5120;
-
-	MagiLogNLoad.MAX_PROXYTABLE_ENTRIES_PER_FILE = 2560;
-
-	MagiLogNLoad.MAX_EXTRAS_PER_FILE = 2560;
-
-	-- Allows the system to replace type ids in the save-file with new ones.
-	-- Use this to support save-files created in older versions of your map that might
-	-- not have the same stuff as the new versions.
-	MagiLogNLoad.oldTypeId2NewTypeId = {
-		--['hpea'] = 'hkni',
-		--['hfoo'] = 'hmkg',
-		--['hsor'] = 'harc'
 	};
 end
 
